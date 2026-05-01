@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duty Logger — Đăng nhập</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Be Vietnam Pro"', 'Inter', 'system-ui', '-apple-system', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'monospace'],
+                    },
+                    colors: {
+                        zinc: {
+                            850: '#1F1F23',
+                            925: '#0F0F11',
+                            950: '#0A0A0B',
+                        },
+                    },
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="font-sans antialiased min-h-screen flex items-center justify-center login-bg">
+    <div class="w-full max-w-md px-6 relative z-10">
+        <div class="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-10 backdrop-blur-2xl shadow-2xl text-center">
+            <!-- Logo -->
+            <div class="relative inline-block mb-6">
+                <div class="brand-mark-pulse w-16 h-16 rounded-2xl gradient-brand brand-glow grid place-items-center text-white relative">
+                    <i data-lucide="clock" class="icon-2xl"></i>
+                </div>
+            </div>
+
+            <h1 class="text-2xl font-bold text-white tracking-tight mb-1">Duty Logger</h1>
+            <p class="text-zinc-400 text-sm mb-8">Hệ thống chấm công Discord</p>
+
+            <a href="/auth/login"
+               class="flex items-center justify-center gap-2 w-full h-12 px-5 rounded-xl text-white font-semibold text-[15px]
+                      gradient-brand hover:opacity-95 active:scale-[0.98]
+                      transition-all duration-200
+                      shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+                Đăng nhập bằng Discord
+            </a>
+
+            <p class="mt-5 text-xs text-zinc-500">Chỉ dành cho thành viên có role chấm công</p>
+        </div>
+    </div>
+
+    <!-- 2FA Modal -->
+    <div id="modal-2fa" class="hidden fixed inset-0 bg-black/70 backdrop-blur-md grid place-items-center z-50 p-6">
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-7 w-full max-w-sm shadow-2xl">
+            <h2 class="text-lg font-semibold text-white mb-2">Xác thực 2FA</h2>
+            <p class="text-zinc-400 text-sm mb-5">Nhập mã 6 chữ số từ Authenticator</p>
+            <input type="text" id="otp-input" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="off"
+                   class="w-full p-3.5 bg-zinc-950 border border-zinc-800 rounded-lg
+                          text-white text-2xl font-semibold text-center tracking-[0.5em] font-mono
+                          focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 mb-4">
+            <button onclick="verify2FA()"
+                    class="w-full h-11 rounded-lg gradient-brand text-white font-semibold
+                           hover:opacity-95 transition-opacity">
+                Xác nhận
+            </button>
+            <p id="otp-error" class="hidden text-red-400 text-sm mt-2"></p>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script>lucide.createIcons();</script>
+    <script src="/static/js/login.js"></script>
+</body>
+</html>

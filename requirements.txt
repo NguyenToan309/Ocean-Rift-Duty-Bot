@@ -1,0 +1,51 @@
+# =====================================================================
+# DUTY LOGGER — Dependencies
+# Cài đặt: pip install -r requirements.txt
+# =====================================================================
+
+# ----- Discord Bot -----
+discord.py>=2.6.0,<2.8      # 2.6+ hỗ trợ message_snapshots (Discord Forward feature)
+
+# ----- Database -----
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0             # PostgreSQL async driver
+alembic==1.14.0             # Database migrations
+psycopg2-binary==2.9.10     # Dùng cho alembic (sync)
+
+# ----- Web Framework -----
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+jinja2==3.1.4               # Template HTML
+python-multipart==0.0.20    # File upload
+
+# ----- Auth & Security -----
+python-jose[cryptography]==3.3.0  # JWT
+pyotp==2.9.0                # 2FA TOTP
+passlib[bcrypt]==1.7.4      # Hash password
+cryptography==44.0.0        # Fernet mã hoá
+httpx==0.28.1               # HTTP client cho OAuth2
+
+# ----- Cache -----
+redis[hiredis]==5.2.1
+
+# ----- OCR -----
+easyocr==1.7.2
+Pillow==11.0.0
+
+# ----- Data & Export -----
+pandas==2.2.3
+openpyxl==3.1.5
+
+# ----- Rate Limiting -----
+slowapi==0.1.9
+
+# ----- Utils -----
+python-dotenv==1.0.1
+pytz==2024.2
+aiofiles==24.1.0            # Async file I/O
+
+# ----- Dev / Test -----
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx                       # Đã liệt kê, dùng cho test FastAPI

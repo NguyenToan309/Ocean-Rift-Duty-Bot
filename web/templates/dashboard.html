@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duty Logger — Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Be Vietnam Pro"', 'Inter', 'system-ui', '-apple-system', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'monospace'],
+                    },
+                    colors: {
+                        zinc: {
+                            850: '#1F1F23',
+                            925: '#0F0F11',
+                            950: '#0A0A0B',
+                        },
+                    },
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body class="font-sans antialiased min-h-screen bg-zinc-950 text-zinc-200">
+
+    <div class="grid grid-cols-[240px_1fr] min-h-screen" id="layout">
+
+        <!-- ───────── Sidebar ───────── -->
+        <aside class="bg-zinc-925 border-r border-zinc-800/80 flex flex-col sticky top-0 h-screen">
+
+            <!-- Logo header -->
+            <div class="px-5 py-4 flex items-center gap-2.5 border-b border-zinc-800/80">
+                <div class="w-8 h-8 rounded-lg gradient-brand grid place-items-center text-white shadow-md shadow-indigo-500/30">
+                    <i data-lucide="clock" class="icon-md"></i>
+                </div>
+                <div class="font-bold text-[15px] text-white tracking-tight">Duty Logger</div>
+            </div>
+
+            <!-- Nav -->
+            <nav class="flex-1 px-2.5 py-3 space-y-0.5 overflow-y-auto">
+                <div class="px-2.5 pt-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Dashboard</div>
+
+                <a href="#overview" data-section="overview"
+                   class="nav-link active flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/60 transition-colors">
+                    <i data-lucide="layout-dashboard" class="icon-md"></i>
+                    <span>Tổng quan</span>
+                </a>
+                <a href="#ranking" data-section="ranking"
+                   class="nav-link flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/60 transition-colors">
+                    <i data-lucide="trophy" class="icon-md"></i>
+                    <span>Bảng xếp hạng</span>
+                </a>
+                <a href="#logs" data-section="logs"
+                   class="nav-link flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/60 transition-colors">
+                    <i data-lucide="list" class="icon-md"></i>
+                    <span>Lịch sử log</span>
+                </a>
+                <a href="#audit" data-section="audit"
+                   class="nav-link nav-mod hidden flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/60 transition-colors">
+                    <i data-lucide="shield-check" class="icon-md"></i>
+                    <span>Audit Log</span>
+                </a>
+            </nav>
+
+            <!-- User card + logout -->
+            <div class="p-2.5 border-t border-zinc-800/80">
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 flex items-center gap-2.5 p-2 rounded-lg hover:bg-zinc-800/40 transition-colors">
+                        <div id="user-avatar"
+                             class="w-8 h-8 rounded-full gradient-brand grid place-items-center text-white font-semibold text-[13px] shrink-0">
+                            ?
+                        </div>
+                        <div class="flex-1 min-w-0 leading-tight">
+                            <div id="username-display" class="text-[13px] font-medium text-white truncate">…</div>
+                            <span id="role-badge" class="inline-block mt-0.5 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider rounded-full bg-zinc-800 text-zinc-400">
+                                …
+                            </span>
+                        </div>
+                    </div>
+                    <button onclick="logout()" title="Đăng xuất"
+                            class="w-9 h-9 grid place-items-center text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                        <i data-lucide="log-out" class="icon-md"></i>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ───────── Main content ───────── -->
+        <main class="overflow-y-auto px-7 py-6 flex flex-col gap-5">
+
+            <!-- Topbar -->
+            <div class="flex items-center justify-between gap-3 flex-wrap bg-zinc-900/60 border border-zinc-800 rounded-xl p-2.5 sticky top-0 z-20 backdrop-blur-md">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <div class="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg hover:border-zinc-700 transition-colors">
+                        <i data-lucide="server" class="icon-sm text-zinc-500"></i>
+                        <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Server</span>
+                        <select id="guild-select" onchange="onGuildChange()"
+                                class="bg-transparent border-0 text-[13px] font-medium text-white cursor-pointer focus:outline-none min-w-[100px]"></select>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <div class="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg hover:border-zinc-700 transition-colors">
+                        <i data-lucide="calendar" class="icon-sm text-zinc-500"></i>
+                        <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Kỳ</span>
+                        <select id="period-select" onchange="loadCurrentSection()"
+                                class="bg-transparent border-0 text-[13px] font-medium text-white cursor-pointer focus:outline-none min-w-[110px]">
+                            <option value="day">Hôm nay</option>
+                            <option value="week" selected>Tuần này</option>
+                            <option value="month">Tháng này</option>
+                            <option value="quarter">Quý này</option>
+                            <option value="all">Tất cả</option>
+                            <option value="custom">Tùy chỉnh</option>
+                        </select>
+                    </div>
+                    <div id="custom-range" class="hidden flex items-center gap-1.5">
+                        <input type="date" id="date-from"
+                               class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-[13px] text-white focus:outline-none focus:border-indigo-500">
+                        <span class="text-zinc-600">→</span>
+                        <input type="date" id="date-to"
+                               class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-[13px] text-white focus:outline-none focus:border-indigo-500">
+                        <button onclick="loadCurrentSection()"
+                                class="h-8 px-3 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white text-[13px] font-medium transition-colors">
+                            Áp dụng
+                        </button>
+                    </div>
+                    <div class="export-buttons mod-only hidden flex items-center gap-1.5">
+                        <button onclick="exportFile('csv')"
+                                class="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white text-[13px] font-medium transition-all">
+                            <i data-lucide="download" class="icon-sm"></i>
+                            CSV
+                        </button>
+                        <button onclick="exportFile('excel')"
+                                class="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white text-[13px] font-medium transition-all">
+                            <i data-lucide="download" class="icon-sm"></i>
+                            Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- No-guild empty state -->
+            <div id="no-guild" class="hidden flex flex-col items-center justify-center py-16 px-8 text-center gap-3 bg-zinc-900/60 border border-zinc-800 rounded-xl">
+                <div class="w-14 h-14 rounded-xl bg-zinc-900 border border-zinc-800 grid place-items-center text-zinc-600 mb-1">
+                    <i data-lucide="ban" class="icon-2xl"></i>
+                </div>
+                <h2 class="text-lg font-semibold text-white">Chưa có quyền truy cập</h2>
+                <p class="text-zinc-400 text-sm max-w-md leading-relaxed">
+                    Bạn cần được cấp role <code class="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-indigo-400 font-mono text-xs">DUTY_MEMBER</code>
+                    hoặc cao hơn trong server.
+                </p>
+                <p class="text-zinc-500 text-sm">
+                    Admin: chạy <code class="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-indigo-400 font-mono text-xs">/setup init</code>
+                    rồi <code class="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-indigo-400 font-mono text-xs">/setup role</code> trong Discord.
+                </p>
+            </div>
+
+            <!-- Loading state -->
+            <div id="loading-state" class="flex flex-col items-center justify-center py-24 gap-4 text-zinc-500">
+                <div class="spinner"></div>
+                <p class="text-sm">Đang tải dữ liệu…</p>
+            </div>
+
+            <!-- Content area -->
+            <div id="content-area" class="hidden">
+
+                <!-- ─── Overview (theo phong cách design B) ─── -->
+                <section id="section-overview" class="space-y-4 section-fade-in">
+
+                    <!-- HERO CARD — gradient indigo→purple với decoration (đặc trưng option B) -->
+                    <div class="relative overflow-hidden rounded-2xl border border-indigo-500/20 bg-gradient-to-br from-indigo-600 via-indigo-700 to-purple-800 p-6 lg:p-7">
+                        <!-- Decorative grid pattern -->
+                        <div class="absolute inset-0 opacity-[0.06]" style="background-image: linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px); background-size: 32px 32px;"></div>
+                        <!-- Glow orbs -->
+                        <div class="absolute -top-12 -right-12 w-64 h-64 rounded-full bg-purple-400/30 blur-3xl pointer-events-none"></div>
+                        <div class="absolute -bottom-20 -left-12 w-72 h-72 rounded-full bg-indigo-400/25 blur-3xl pointer-events-none"></div>
+
+                        <div class="relative z-10 flex items-center justify-between flex-wrap gap-4">
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2 text-indigo-200 text-xs font-semibold uppercase tracking-[0.15em] mb-2">
+                                    <i data-lucide="sparkles" class="icon-sm"></i>
+                                    <span id="hero-period-label">Tuần này</span>
+                                </div>
+                                <h1 class="text-3xl lg:text-4xl font-bold text-white tracking-tight leading-tight">
+                                    Chào mừng, <span id="hero-username">…</span>
+                                </h1>
+                                <p class="text-indigo-100/80 text-sm mt-2 max-w-md leading-relaxed">
+                                    Server <span id="hero-guild" class="font-semibold text-white">…</span> ·
+                                    <span id="hero-headline">Đang tải dữ liệu chấm công…</span>
+                                </p>
+                            </div>
+
+                            <!-- Headline metric (huge number) -->
+                            <div class="flex items-center gap-4 lg:gap-5 text-white shrink-0">
+                                <div class="text-right">
+                                    <div class="text-[11px] font-semibold uppercase tracking-[0.15em] text-indigo-200">Tổng giờ trực</div>
+                                    <div id="hero-total-hours" class="text-4xl lg:text-5xl font-bold tabular-nums tracking-tight leading-none mt-1">--</div>
+                                    <div class="text-[11px] text-indigo-100/70 mt-1">trong kỳ đang chọn</div>
+                                </div>
+                                <div class="hidden lg:flex w-20 h-20 rounded-2xl bg-white/10 backdrop-blur-sm border border-white/20 grid place-items-center shrink-0">
+                                    <i data-lucide="timer" class="icon-2xl text-white"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex items-end justify-between flex-wrap gap-2">
+                        <div>
+                            <h2 class="flex items-center gap-2.5 text-xl font-bold text-white tracking-tight">
+                                <i data-lucide="layout-dashboard" class="icon-lg text-indigo-400"></i>
+                                Tổng quan
+                            </h2>
+                            <p class="text-zinc-400 text-sm mt-1">Thống kê chi tiết trong khoảng thời gian đã chọn</p>
+                        </div>
+                    </div>
+
+                    <!-- Stats row - compact data-dense -->
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div class="stat-card-glow hover-lift relative overflow-hidden bg-zinc-900/60 border border-zinc-800 rounded-xl p-4"
+                             style="--glow: rgba(99,102,241,0.18)">
+                            <div class="flex items-center gap-3 relative z-10">
+                                <div class="w-10 h-10 rounded-lg bg-indigo-500/10 border border-indigo-500/20 grid place-items-center text-indigo-400 shrink-0">
+                                    <i data-lucide="clipboard-list" class="icon-md"></i>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Tổng ca</div>
+                                    <div id="stat-sessions" class="text-2xl font-bold text-white tabular-nums tracking-tight leading-tight mt-0.5">--</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="stat-card-glow hover-lift relative overflow-hidden bg-zinc-900/60 border border-zinc-800 rounded-xl p-4"
+                             style="--glow: rgba(16,185,129,0.18)">
+                            <div class="flex items-center gap-3 relative z-10">
+                                <div class="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 grid place-items-center text-emerald-400 shrink-0">
+                                    <i data-lucide="clock" class="icon-md"></i>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Tổng thời gian</div>
+                                    <div id="stat-time" class="text-2xl font-bold text-white tabular-nums tracking-tight leading-tight mt-0.5">--</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="stat-card-glow hover-lift relative overflow-hidden bg-zinc-900/60 border border-zinc-800 rounded-xl p-4"
+                             style="--glow: rgba(168,85,247,0.18)">
+                            <div class="flex items-center gap-3 relative z-10">
+                                <div class="w-10 h-10 rounded-lg bg-purple-500/10 border border-purple-500/20 grid place-items-center text-purple-400 shrink-0">
+                                    <i data-lucide="users" class="icon-md"></i>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Thành viên</div>
+                                    <div id="stat-members" class="text-2xl font-bold text-white tabular-nums tracking-tight leading-tight mt-0.5">--</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="stat-card-glow hover-lift relative overflow-hidden bg-zinc-900/60 border border-zinc-800 rounded-xl p-4"
+                             style="--glow: rgba(245,158,11,0.18)">
+                            <div class="flex items-center gap-3 relative z-10">
+                                <div class="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 grid place-items-center text-amber-400 shrink-0">
+                                    <i data-lucide="trending-up" class="icon-md"></i>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">TB / ca</div>
+                                    <div id="stat-avg" class="text-2xl font-bold text-white tabular-nums tracking-tight leading-tight mt-0.5">--</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2-col data-dense layout: Chart (left, 60%) + Top 5 (right, 40%) -->
+                    <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                        <div class="lg:col-span-3 bg-zinc-900/60 border border-zinc-800 rounded-xl p-5">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="flex items-center gap-2 text-[14px] font-semibold text-white">
+                                    <i data-lucide="bar-chart-3" class="icon-md text-zinc-500"></i>
+                                    Biểu đồ thời gian trực
+                                </h3>
+                                <span class="text-[11px] text-zinc-500">phút / ngày</span>
+                            </div>
+                            <canvas id="duty-chart" style="max-height: 260px"></canvas>
+                        </div>
+
+                        <div class="lg:col-span-2 bg-zinc-900/60 border border-zinc-800 rounded-xl p-5">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="flex items-center gap-2 text-[14px] font-semibold text-white">
+                                    <i data-lucide="trophy" class="icon-md text-zinc-500"></i>
+                                    Top 5 trong kỳ
+                                </h3>
+                                <button onclick="switchSection('ranking')"
+                                        class="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
+                                    Xem đầy đủ →
+                                </button>
+                            </div>
+                            <div id="top5-list" class="space-y-1"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ─── Ranking ─── -->
+                <section id="section-ranking" class="hidden space-y-5 section-fade-in">
+                    <div>
+                        <h1 class="flex items-center gap-2.5 text-2xl font-bold text-white tracking-tight">
+                            <i data-lucide="trophy" class="icon-xl text-indigo-400"></i>
+                            Bảng xếp hạng
+                        </h1>
+                        <p class="text-zinc-400 text-sm mt-1">Xếp hạng thành viên theo tổng thời gian trực</p>
+                    </div>
+
+                    <div class="bg-zinc-900/60 border border-zinc-800 rounded-xl p-5">
+                        <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                            <h3 class="text-[15px] font-semibold text-white">Danh sách</h3>
+                            <button onclick="toggleOrder()" id="order-btn"
+                                    class="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white text-[13px] font-medium transition-all">
+                                <i data-lucide="arrow-down" class="icon-sm"></i>
+                                Nhiều nhất
+                            </button>
+                        </div>
+                        <div class="overflow-x-auto -mx-5">
+                            <table class="w-full text-[13px]" id="ranking-table">
+                                <thead class="border-b border-zinc-800">
+                                    <tr>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[60px]">#</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Thành viên</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[280px]">Tổng thời gian</th>
+                                        <th class="text-right px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[100px]">Số ca</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ranking-body">
+                                    <tr><td colspan="4" class="text-center text-zinc-500 italic py-10">Đang tải…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="ranking-pagination" class="flex justify-center items-center gap-1.5 mt-4 pt-4 border-t border-zinc-800"></div>
+                    </div>
+                </section>
+
+                <!-- ─── Logs ─── -->
+                <section id="section-logs" class="hidden space-y-5 section-fade-in">
+                    <div>
+                        <h1 class="flex items-center gap-2.5 text-2xl font-bold text-white tracking-tight">
+                            <i data-lucide="list" class="icon-xl text-indigo-400"></i>
+                            Lịch sử ca trực
+                        </h1>
+                        <p class="text-zinc-400 text-sm mt-1">Xem chi tiết từng ca trực, có thể xóa nếu cần</p>
+                    </div>
+
+                    <div class="bg-zinc-900/60 border border-zinc-800 rounded-xl p-5">
+                        <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                            <div>
+                                <h3 class="text-[15px] font-semibold text-white">
+                                    <span class="logs-title-mod hidden">Tất cả ca trực</span>
+                                    <span class="logs-title-member">Ca trực của bạn</span>
+                                </h3>
+                                <p class="logs-title-member text-[12px] text-zinc-500 mt-0.5">Member chỉ xem được log của bản thân</p>
+                            </div>
+                            <div class="logs-filters mod-only hidden flex items-center gap-1.5 flex-wrap">
+                                <input type="text" id="logs-user-filter" placeholder="Lọc theo Discord ID…"
+                                       class="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-[13px] text-white placeholder-zinc-600 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 w-56">
+                                <button onclick="applyLogsFilter()"
+                                        class="h-8 px-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white text-[13px] font-medium transition-all">
+                                    Lọc
+                                </button>
+                                <button onclick="clearLogsFilter()"
+                                        class="h-8 px-3 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800/60 text-[13px] font-medium transition-colors">
+                                    Bỏ lọc
+                                </button>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto -mx-5">
+                            <table class="w-full text-[13px]">
+                                <thead class="border-b border-zinc-800">
+                                    <tr>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[80px]">ID</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Thành viên</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[160px]">Bắt đầu</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[160px]">Kết thúc</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[120px]">Thời gian</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[110px]">Nguồn</th>
+                                        <th class="text-right px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[48px]"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logs-body">
+                                    <tr><td colspan="7" class="text-center text-zinc-500 italic py-10">Đang tải…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="logs-pagination" class="flex justify-center items-center gap-1.5 mt-4 pt-4 border-t border-zinc-800"></div>
+                    </div>
+                </section>
+
+                <!-- ─── Audit ─── -->
+                <section id="section-audit" class="hidden space-y-5 section-fade-in">
+                    <div>
+                        <h1 class="flex items-center gap-2.5 text-2xl font-bold text-white tracking-tight">
+                            <i data-lucide="shield-check" class="icon-xl text-indigo-400"></i>
+                            Audit Log
+                            <span class="ml-1 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">Mod+</span>
+                        </h1>
+                        <p class="text-zinc-400 text-sm mt-1">Theo dõi mọi hành động quan trọng trong hệ thống</p>
+                    </div>
+
+                    <div class="bg-zinc-900/60 border border-zinc-800 rounded-xl p-5">
+                        <h3 class="text-[15px] font-semibold text-white mb-4">Hoạt động gần đây</h3>
+                        <div class="overflow-x-auto -mx-5">
+                            <table class="w-full text-[13px]">
+                                <thead class="border-b border-zinc-800">
+                                    <tr>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[160px]">Thời gian</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Người dùng</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 w-[160px]">Hành động</th>
+                                        <th class="text-left px-5 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Chi tiết</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="audit-body">
+                                    <tr><td colspan="4" class="text-center text-zinc-500 italic py-10">Đang tải…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="hidden fixed bottom-5 right-5 px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-lg shadow-2xl text-[13px] font-medium text-white z-50 max-w-sm border-l-4 border-l-indigo-500 toast-slide-in">
+    </div>
+
+    <!-- Confirm modal -->
+    <div id="confirm-modal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-md grid place-items-center z-50 p-6">
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h2 class="text-lg font-semibold text-white mb-2">Xác nhận xóa</h2>
+            <p id="confirm-modal-text" class="text-zinc-400 text-sm mb-5">Bạn có chắc muốn xóa log này?</p>
+            <div class="flex gap-2 justify-end">
+                <button onclick="closeConfirm()"
+                        class="h-9 px-4 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[13px] font-medium transition-colors">
+                    Hủy
+                </button>
+                <button onclick="confirmDelete()"
+                        class="h-9 px-4 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[13px] font-medium transition-colors">
+                    Xóa
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active nav style applied via JS - additional CSS for active state -->
+    <style>
+        .nav-link.active {
+            background: rgba(99, 102, 241, 0.12);
+            color: #818CF8 !important;
+        }
+        .nav-link.active::before {
+            content: "";
+            position: absolute;
+            left: -10px;
+            top: 6px; bottom: 6px;
+            width: 3px;
+            background: #6366F1;
+            border-radius: 0 3px 3px 0;
+        }
+        .nav-link { position: relative; }
+    </style>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script>lucide.createIcons();</script>
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
