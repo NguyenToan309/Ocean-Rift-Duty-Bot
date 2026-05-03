@@ -58,7 +58,13 @@ async def get_my_guilds(
 
     for cfg in configs:
         # Hỏi Discord user có trong guild không + roles của user
-        user_role_ids = set(await fetch_member_role_ids(cfg.guild_id, user_id))
+        # fetch_member_role_ids trả None khi Discord API lỗi/timeout — KHÔNG được set(None)
+        raw_role_ids = await fetch_member_role_ids(cfg.guild_id, user_id)
+        if raw_role_ids is None:
+            # Discord API tạm thời không phản hồi — bỏ qua guild này thay vì crash
+            # User có thể refresh để thử lại sau
+            continue
+        user_role_ids = set(raw_role_ids)
         if not user_role_ids:
             continue  # User không phải thành viên guild này
 
@@ -293,7 +299,8 @@ async def list_logs(
         select(GuildConfig).where(GuildConfig.guild_id == guild_id)
     )
     cfg = cfg_row.scalar_one_or_none()
-    user_role_ids = set(await fetch_member_role_ids(guild_id, current_uid))
+    raw_role_ids = await fetch_member_role_ids(guild_id, current_uid)
+    user_role_ids = set(raw_role_ids) if raw_role_ids is not None else set()
     is_mod_or_admin = False
     if cfg:
         for r in ("DUTY_MOD", "DUTY_ADMIN"):

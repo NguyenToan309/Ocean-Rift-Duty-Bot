@@ -2,6 +2,13 @@
 auth.py — Discord OAuth2 + JWT + 2FA (TOTP)
 Luồng: user click Login → redirect Discord → callback → issue JWT
 2FA: sau khi login thành công, nếu user có 2FA thì yêu cầu nhập OTP
+
+Security notes:
+- OAuth2 state lưu in-memory với TTL 5 phút (đủ cho single-process local)
+- JWT dùng HS256 với SECRET_KEY từ .env
+- 2fa_pending token bị blacklist ngay sau khi dùng thành công (prevent reuse)
+- Refresh token dùng samesite=strict để ngăn CSRF trên POST endpoint
+- Cookie HttpOnly + Secure (khi không phải DEBUG)
 """
 import secrets
 import logging
@@ -30,8 +37,18 @@ DISCORD_API = "https://discord.com/api/v10"
 ALGORITHM = "HS256"
 
 # State param chống CSRF trong OAuth2 flow.
-# Lưu in-memory với TTL 5 phút (đơn giản, đủ cho single-process).
-# Production multi-worker nên chuyển sang Redis.
+# Lưu in-memory với TTL 5 phút — đủ cho single-process (local/single-worker).
+#
+# ⚠️ MULTI-WORKER WARNING: Nếu chạy uvicorn với --workers N > 1, state bị split
+# giữa các worker → request /auth/login sang worker A, callback rơi worker B
+# → state miss → CSRF rejection. Production multi-worker phải dùng Redis:
+#
+#   import redis.asyncio as redis
+#   _redis = redis.from_url(settings.REDIS_URL)
+#   await _redis.setex(f"oauth_state:{state}", 300, "1")
+#   exists = await _redis.delete(f"oauth_state:{state}")  # one-time use
+#
+# Hiện tại (local/single-worker) → dict in-memory đủ dùng.
 _OAUTH_STATE_TTL_SECONDS = 300
 _oauth_states: dict[str, datetime] = {}  # state -> created_at (aware UTC)
 
@@ -40,7 +57,6 @@ def _store_oauth_state(state: str) -> None:
     """Lưu state với timestamp tạo, đồng thời dọn các state hết hạn"""
     now = utcnow()
     cutoff = now - timedelta(seconds=_OAUTH_STATE_TTL_SECONDS)
-    # Cleanup state cũ
     expired = [s for s, ts in _oauth_states.items() if ts < cutoff]
     for s in expired:
         _oauth_states.pop(s, None)
@@ -86,7 +102,6 @@ async def decode_token(token: str, session: AsyncSession, expected_type: str = "
     if payload.get("type") != expected_type:
         raise HTTPException(status_code=401, detail="Sai loại token")
 
-    # Kiểm tra blacklist
     jti = payload.get("jti")
     if jti:
         bl = await session.execute(
@@ -127,7 +142,10 @@ async def oauth_callback(
     """Nhận code từ Discord → lấy user info → issue JWT"""
     # Validate state chống CSRF (one-time use, TTL 5 phút)
     if not _consume_oauth_state(state):
-        raise HTTPException(status_code=400, detail="State không hợp lệ hoặc đã hết hạn (CSRF protection)")
+        raise HTTPException(
+            status_code=400,
+            detail="State không hợp lệ hoặc đã hết hạn. Vui lòng thử đăng nhập lại."
+        )
 
     # Đổi code lấy access token Discord
     async with httpx.AsyncClient() as client:
@@ -167,15 +185,23 @@ async def oauth_callback(
     result = await session.execute(select(User).where(User.discord_id == discord_id))
     user = result.scalar_one_or_none()
 
+    avatar = discord_user.get("avatar")
+    avatar_url = (
+        f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar}.png"
+        if avatar else None
+    )
+
     if user is None:
         user = User(
             discord_id=discord_id,
             username=username,
             discriminator=discord_user.get("discriminator"),
-            avatar_url=f"https://cdn.discordapp.com/avatars/{discord_id}/{discord_user.get('avatar')}.png",
+            avatar_url=avatar_url,
             created_at=utcnow(),
         )
         session.add(user)
+    else:
+        user.avatar_url = avatar_url  # Update avatar nếu thay đổi
 
     # Kiểm tra lockout
     if user.is_locked():
@@ -187,19 +213,33 @@ async def oauth_callback(
             created_at=utcnow(),
         ))
         await session.commit()
-        raise HTTPException(status_code=403, detail="Tài khoản tạm thời bị khóa do đăng nhập sai nhiều lần")
+        raise HTTPException(
+            status_code=403,
+            detail="Tài khoản tạm thời bị khóa do đăng nhập sai nhiều lần. Thử lại sau 30 phút."
+        )
 
     user.username = username
     user.last_login_ip = ip
 
-    # Nếu user có 2FA, trả về temp token yêu cầu verify OTP
+    # Nếu user có 2FA, set cookie 2fa_pending HttpOnly + redirect về login page
+    # Frontend đọc URL flag ?require_2fa=1 → mở modal nhập OTP → POST /auth/verify-2fa
+    # (cookie 2fa_pending tự gửi, không cần truyền token qua URL → tránh leak qua Referer)
     if user.is_2fa_enabled:
         temp_token = _create_token(
             {"sub": str(discord_id), "username": username, "type": "2fa_pending"},
             timedelta(minutes=5),
         )
         await session.commit()
-        return JSONResponse({"require_2fa": True, "temp_token": temp_token})
+        response = RedirectResponse(url="/?require_2fa=1", status_code=302)
+        response.set_cookie(
+            "2fa_pending",
+            temp_token,
+            httponly=True,
+            samesite="lax",
+            secure=not settings.DEBUG,
+            max_age=300,  # 5 phút — khớp TTL của temp_token
+        )
+        return response
 
     user.last_login_at = utcnow()
     user.failed_login_attempts = 0
@@ -216,11 +256,17 @@ async def oauth_callback(
     access_token = create_access_token(discord_id, username)
     refresh_token = create_refresh_token(discord_id)
 
-    # Set cookie + redirect về dashboard (not JSON — vì callback chạy trong browser)
-    # samesite="lax" để cookie được gửi khi redirect từ Discord
+    # Set cookie + redirect về dashboard
+    # samesite="lax": cookie được gửi khi redirect từ Discord (cross-site GET redirect)
     response = RedirectResponse(url="/dashboard", status_code=302)
-    response.set_cookie("access_token", access_token, httponly=True, samesite="lax", secure=not settings.DEBUG)
-    response.set_cookie("refresh_token", refresh_token, httponly=True, samesite="lax", secure=not settings.DEBUG)
+    response.set_cookie(
+        "access_token", access_token,
+        httponly=True, samesite="lax", secure=not settings.DEBUG
+    )
+    response.set_cookie(
+        "refresh_token", refresh_token,
+        httponly=True, samesite="strict", secure=not settings.DEBUG
+    )
     return response
 
 
@@ -230,9 +276,13 @@ async def verify_2fa(
     request: Request,
     session: AsyncSession = Depends(get_db),
 ):
-    """Xác minh OTP 2FA sau khi login"""
+    """
+    Xác minh OTP 2FA sau khi login.
+    Sau khi verify thành công, temp_token bị blacklist ngay để ngăn reuse.
+    """
     body = await request.json()
-    temp_token = body.get("temp_token")
+    # Lấy temp_token từ HttpOnly cookie (an toàn hơn URL/body) — fallback body cho backward compat
+    temp_token = request.cookies.get("2fa_pending") or body.get("temp_token")
     otp_code = body.get("otp_code", "").strip()
 
     if not temp_token or not otp_code:
@@ -258,7 +308,6 @@ async def verify_2fa(
     if not totp.verify(otp_code, valid_window=1):  # ±30 giây drift
         user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
 
-        # Lockout sau 5 lần sai
         if user.failed_login_attempts >= 5:
             user.locked_until = utcnow() + timedelta(minutes=30)
             session.add(AuditLog(
@@ -277,6 +326,17 @@ async def verify_2fa(
         await session.commit()
         raise HTTPException(status_code=401, detail="Mã OTP không đúng")
 
+    # ── OTP hợp lệ — blacklist temp_token ngay để ngăn reuse ──
+    jti = payload.get("jti")
+    if jti:
+        exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+        session.add(BlacklistedToken(
+            jti=jti,
+            user_id=discord_id,
+            expires_at=exp,
+            blacklisted_at=utcnow(),
+        ))
+
     user.failed_login_attempts = 0
     user.locked_until = None
     user.last_login_at = utcnow()
@@ -294,8 +354,16 @@ async def verify_2fa(
     refresh_token = create_refresh_token(discord_id)
 
     response = JSONResponse({"message": "Đăng nhập thành công", "username": username})
-    response.set_cookie("access_token", access_token, httponly=True, samesite="lax", secure=not settings.DEBUG)
-    response.set_cookie("refresh_token", refresh_token, httponly=True, samesite="lax", secure=not settings.DEBUG)
+    response.set_cookie(
+        "access_token", access_token,
+        httponly=True, samesite="lax", secure=not settings.DEBUG
+    )
+    response.set_cookie(
+        "refresh_token", refresh_token,
+        httponly=True, samesite="strict", secure=not settings.DEBUG
+    )
+    # Xoá cookie 2fa_pending sau khi đã verify thành công
+    response.delete_cookie("2fa_pending")
     return response
 
 
@@ -346,5 +414,8 @@ async def refresh_token(request: Request, session: AsyncSession = Depends(get_db
 
     new_access = create_access_token(discord_id, user.username)
     response = JSONResponse({"message": "Token đã được làm mới"})
-    response.set_cookie("access_token", new_access, httponly=True, samesite="strict", secure=not settings.DEBUG)
+    response.set_cookie(
+        "access_token", new_access,
+        httponly=True, samesite="lax", secure=not settings.DEBUG
+    )
     return response

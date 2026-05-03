@@ -3,7 +3,7 @@ duty_log.py — Bảng chính lưu mỗi ca trực
 Index kép (guild_id, started_at) và (guild_id, user_id) để query thống kê nhanh
 """
 from datetime import datetime
-from sqlalchemy import BigInteger, String, Integer, DateTime, Text, Index
+from sqlalchemy import BigInteger, String, Integer, DateTime, Text, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base
 from bot.utils.time_utils import utcnow
@@ -31,10 +31,10 @@ class DutyLog(Base):
     # Nguyên bản text log (để debug khi parse sai)
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Nguồn dữ liệu: "ocr" | "forward" | "manual"
+    # Nguồn dữ liệu: "ocr" | "forward" | "manual" | "message"
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="forward")
 
-    # Discord message ID gốc (để tránh duplicate)
+    # Discord message ID gốc (để tránh duplicate auto-scan)
     source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
 
     # Người upload/xác nhận (admin có thể nhập thay)
@@ -44,11 +44,21 @@ class DutyLog(Base):
         DateTime(timezone=True), nullable=False, default=utcnow
     )
 
-    # ----- Composite indexes cho query thống kê -----
     __table_args__ = (
+        # Query thống kê theo kỳ (filter guild + date range)
         Index("ix_duty_logs_guild_started", "guild_id", "started_at"),
+        # Query theo user trong guild
         Index("ix_duty_logs_guild_user", "guild_id", "user_id"),
-        Index("ix_duty_logs_guild_user_started", "guild_id", "user_id", "started_at"),
+        # Query ranking: guild + date range + group by user — covering index tránh heap scan
+        Index("ix_duty_logs_ranking_cover", "guild_id", "started_at", "user_id", "duration_minutes"),
+        # Query overlap check: tìm ca trực chồng lấp cùng user
+        Index("ix_duty_logs_overlap", "guild_id", "user_id", "started_at", "ended_at"),
+        # DB-level unique constraint: chặn race condition Layer 2
+        # (application check không đủ khi 2 requests đồng thời)
+        UniqueConstraint(
+            "guild_id", "user_id", "started_at", "ended_at",
+            name="uq_duty_log_entry"
+        ),
     )
 
     @property

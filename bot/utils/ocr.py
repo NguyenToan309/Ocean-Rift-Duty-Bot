@@ -1,9 +1,17 @@
 """
 ocr.py — OCR pipeline: nhận ảnh bytes → trích xuất text → parse LOG DUTY
 Dùng EasyOCR với ngôn ngữ Vietnamese + English
+
+Concurrency safety:
+- _OCR_SEMAPHORE giới hạn tối đa 2 OCR jobs đồng thời (CPU-bound, không nên chạy nhiều hơn)
+- _OCR_EXECUTOR dùng ThreadPoolExecutor riêng tránh tranh CPU với default executor
+- _reader_lock đảm bảo EasyOCR reader chỉ khởi tạo 1 lần dù nhiều thread cùng gọi lần đầu
 """
+import asyncio
 import io
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 from PIL import Image
@@ -12,16 +20,36 @@ from bot.utils.parser import ParsedDutyLog, parse_duty_text
 
 logger = logging.getLogger(__name__)
 
+# Giới hạn 2 OCR jobs đồng thời — EasyOCR là CPU-bound, nhiều hơn sẽ thrash CPU
+_OCR_SEMAPHORE: asyncio.Semaphore | None = None  # Khởi tạo lazy (cần running event loop)
+_OCR_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr-worker")
+_reader_lock = threading.Lock()
+
+
+def _get_ocr_semaphore() -> asyncio.Semaphore:
+    """Khởi tạo semaphore lazy trong event loop hiện tại"""
+    global _OCR_SEMAPHORE
+    if _OCR_SEMAPHORE is None:
+        _OCR_SEMAPHORE = asyncio.Semaphore(2)
+    return _OCR_SEMAPHORE
+
 
 @lru_cache(maxsize=1)
 def _get_reader():
     """
     Lazy-load EasyOCR reader (tốn ~500MB RAM, chỉ khởi tạo 1 lần).
+    Thread-safe: _reader_lock đảm bảo không có thundering herd khi nhiều
+    requests đầu tiên cùng lúc kích hoạt lazy init.
     gpu=False vì VPS thường không có GPU.
     """
-    import easyocr
-    logger.info("Đang khởi tạo EasyOCR reader (lần đầu sẽ tải model)...")
-    return easyocr.Reader(["vi", "en"], gpu=False)
+    # lru_cache đã đảm bảo chỉ gọi 1 lần, nhưng lock phòng trường hợp
+    # nhiều thread đang trong khi chưa có cache entry
+    with _reader_lock:
+        import easyocr
+        logger.info("Đang khởi tạo EasyOCR reader (lần đầu sẽ tải model ~30s)...")
+        reader = easyocr.Reader(["vi", "en"], gpu=False)
+        logger.info("EasyOCR reader đã sẵn sàng.")
+        return reader
 
 
 def _check_magic_bytes(image_bytes: bytes) -> str | None:
@@ -92,23 +120,24 @@ async def extract_duty_from_image(
     Pipeline đầy đủ:
     1. Validate MIME + size
     2. Tiền xử lý ảnh
-    3. OCR → raw text
+    3. OCR trong thread pool (tối đa 2 concurrent, không block event loop)
     4. Parse LOG DUTY
     5. Trả về ParsedDutyLog hoặc None
 
-    Chạy sync OCR trong executor để không block event loop
+    Nếu semaphore đầy (2 jobs đang chạy), request này sẽ chờ trong queue
+    thay vì spawn thêm thread và tranh CPU.
     """
-    import asyncio
-
     # Bước 1: Validate (sync, nhanh)
     _validate_image(image_bytes, mime_type)
 
-    # Bước 2: Tiền xử lý
+    # Bước 2: Tiền xử lý (sync, nhanh — PIL)
     processed_bytes = _preprocess_image(image_bytes)
 
-    # Bước 3: OCR trong thread pool (EasyOCR không async)
-    loop = asyncio.get_event_loop()
-    raw_text = await loop.run_in_executor(None, _run_ocr, processed_bytes)
+    # Bước 3: OCR trong thread pool, giới hạn 2 jobs đồng thời
+    semaphore = _get_ocr_semaphore()
+    async with semaphore:
+        loop = asyncio.get_running_loop()  # get_event_loop() deprecated từ Python 3.10
+        raw_text = await loop.run_in_executor(_OCR_EXECUTOR, _run_ocr, processed_bytes)
 
     if not raw_text:
         logger.warning("OCR không trích xuất được text từ ảnh")
@@ -119,13 +148,24 @@ async def extract_duty_from_image(
     # Bước 4: Parse
     result = parse_duty_text(raw_text)
     if result is None:
-        logger.warning(f"Không tìm thấy LOG DUTY trong text OCR. Text trên đã log ở INFO level.")
+        logger.warning("Không tìm thấy LOG DUTY trong text OCR. Xem raw text ở log trên.")
 
     return result
 
 
 def _run_ocr(image_bytes: bytes) -> str:
-    """Chạy EasyOCR (blocking) — gọi trong executor"""
+    """Chạy EasyOCR (blocking) — phải gọi trong executor, không được gọi từ event loop trực tiếp"""
     reader = _get_reader()
     results = reader.readtext(image_bytes, detail=0, paragraph=True)
     return "\n".join(results)
+
+
+async def warmup_ocr() -> None:
+    """
+    Pre-warm EasyOCR model khi bot khởi động.
+    Gọi 1 lần trong setup() để tránh lag 30s ở lần upload đầu tiên.
+    """
+    logger.info("Pre-warming EasyOCR model...")
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_OCR_EXECUTOR, _get_reader)
+    logger.info("EasyOCR model đã warm-up xong.")
