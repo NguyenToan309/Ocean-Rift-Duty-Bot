@@ -88,14 +88,21 @@ async function loadGuilds() {
     renderRoleBadge(selected.role_level);
 
     // Toggle role-based visibility
-    document.querySelectorAll(".mod-only").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
-    document.querySelectorAll(".nav-mod").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
-    document.querySelectorAll(".logs-title-mod").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
-    document.querySelectorAll(".logs-title-member").forEach((el) => el.classList.toggle("hidden", STATE.isMod));
+    applyRoleVisibility();
 
     // Show content
     document.getElementById("content-area").classList.remove("hidden");
     loadCurrentSection();
+}
+
+function applyRoleVisibility() {
+    // .mod-only: hiện cho MOD và ADMIN (export buttons, logs filter…)
+    document.querySelectorAll(".mod-only").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
+    // .admin-only: chỉ ADMIN (audit log nav)
+    document.querySelectorAll(".admin-only").forEach((el) => el.classList.toggle("hidden", !STATE.isAdmin));
+    // Tiêu đề logs section: phân biệt mod-view và member-view
+    document.querySelectorAll(".logs-title-mod").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
+    document.querySelectorAll(".logs-title-member").forEach((el) => el.classList.toggle("hidden", STATE.isMod));
 }
 
 function onGuildChange() {
@@ -107,12 +114,9 @@ function onGuildChange() {
     STATE.isAdmin = g.is_admin;
     localStorage.setItem("guild_id", newId);
     renderRoleBadge(g.role_level);
-    document.querySelectorAll(".mod-only").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
-    document.querySelectorAll(".nav-mod").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
-    document.querySelectorAll(".logs-title-mod").forEach((el) => el.classList.toggle("hidden", !STATE.isMod));
-    document.querySelectorAll(".logs-title-member").forEach((el) => el.classList.toggle("hidden", STATE.isMod));
+    applyRoleVisibility();
     // Switch to overview if currently on audit but no longer admin
-    if (!STATE.isMod && STATE.currentSection === "audit") {
+    if (!STATE.isAdmin && STATE.currentSection === "audit") {
         switchSection("overview");
     } else {
         loadCurrentSection();
@@ -541,12 +545,6 @@ async function confirmDelete() {
 
     showToast(`✅ Đã xóa log #${id}`, "success");
     loadLogs(STATE.logsPage);
-}
-
-// Cache user_id từ guild list (sub claim không có sẵn vì cookie HttpOnly)
-function currentUserId() {
-    // Server cần expose; tạm thời lấy từ localStorage nếu set sau login
-    return localStorage.getItem("user_id");
 }
 
 // ── Audit ──

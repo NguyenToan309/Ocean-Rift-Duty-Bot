@@ -30,6 +30,8 @@ class BlacklistedToken(Base):
 
     __table_args__ = (
         Index("ix_blacklist_user_exp", "user_id", "expires_at"),
+        # Hỗ trợ cleanup_tokens.py query nhanh: WHERE expires_at < now()
+        Index("ix_token_blacklist_expires", "expires_at"),
     )
 
     def __repr__(self) -> str:

@@ -48,4 +48,4 @@ aiofiles==24.1.0            # Async file I/O
 pytest==8.3.4
 pytest-asyncio==0.24.0
 pytest-cov==6.0.0
-httpx                       # Đã liệt kê, dùng cho test FastAPI
+# httpx — dùng chung cho OAuth client (đã pin ở trên) + FastAPI TestClient

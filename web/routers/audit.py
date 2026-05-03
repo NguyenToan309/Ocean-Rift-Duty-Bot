@@ -1,6 +1,7 @@
 """
-audit.py — Xem audit log (chỉ DUTY_ADMIN)
-Không expose endpoint xóa — audit log là immutable
+audit.py — Xem audit log (CHỈ DUTY_ADMIN)
+Audit log chứa IP, login events, role changes — chỉ admin mới được xem để bảo vệ privacy.
+Không expose endpoint xóa — audit log là immutable.
 """
 import logging
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -29,10 +30,10 @@ async def get_audit_logs(
     current_user: dict = Depends(require_auth),
 ):
     """
-    Lấy danh sách audit log — DUTY_MOD hoặc DUTY_ADMIN.
-    Web gọi Discord API bằng bot token để verify role của user trong guild.
+    Lấy danh sách audit log — CHỈ DUTY_ADMIN trong guild đó.
+    Audit log chứa thông tin nhạy cảm (IP, login attempts, role changes) → privacy-by-default.
     """
-    await require_guild_role(guild_id, "DUTY_MOD", current_user, session)
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
 
     offset = (page - 1) * page_size
     query = (

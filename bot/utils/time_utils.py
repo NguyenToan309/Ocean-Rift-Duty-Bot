@@ -142,3 +142,36 @@ def format_datetime_vn(dt: datetime, tz_str: str | None = None) -> str:
     local_dt = to_local(dt, tz_str)
     day_name = weekdays[local_dt.weekday()]
     return f"{local_dt.strftime('%H:%M')} {day_name}, {local_dt.strftime('%d/%m/%Y')}"
+
+
+# ─── Period choices dùng chung cho slash commands ─────────────────────────────
+
+PERIOD_LABEL_MAP: dict[str, str] = {
+    "day":     "Hôm nay",
+    "week":    "Tuần này",
+    "month":   "Tháng này",
+    "quarter": "Quý này",
+    "all":     "Toàn bộ thời gian",
+    "custom":  "Khoảng tùy chỉnh",
+}
+
+
+def get_period_label(period: str) -> str:
+    """Trả về nhãn tiếng Việt của period code."""
+    return PERIOD_LABEL_MAP.get(period, period)
+
+
+def make_period_choices():
+    """
+    Tạo list app_commands.Choice dùng cho mọi slash command có tham số `ky`.
+    Tránh duplicate ở 5 cogs (export, ranking, stats, log_view).
+    Import lười: `from discord import app_commands` để time_utils không hard-depend discord.
+    """
+    from discord import app_commands
+    return [
+        app_commands.Choice(name="📅 Hôm nay",         value="day"),
+        app_commands.Choice(name="📆 Tuần này",        value="week"),
+        app_commands.Choice(name="🗓️ Tháng này",       value="month"),
+        app_commands.Choice(name="📊 Quý này",         value="quarter"),
+        app_commands.Choice(name="🔧 Tùy chỉnh ngày",  value="custom"),
+    ]

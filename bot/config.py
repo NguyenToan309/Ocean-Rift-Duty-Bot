@@ -11,7 +11,49 @@ from functools import lru_cache
 from urllib.parse import urlparse, unquote
 from dotenv import load_dotenv
 
-load_dotenv()
+
+# ─── Patch starlette.config để tránh lỗi cp1252 đọc .env trên Windows ────────
+# Starlette dùng mã hoá hệ thống (cp1252 trên Windows tiếng Việt) → nếu .env
+# có bất kỳ ký tự non-ASCII (vd tiếng Việt trong comment) → UnicodeDecodeError
+# Slowapi gọi starlette.config.Config() → blocking khi import web.main
+# Patch ở đây vì bot/config.py được mọi module (bot, web, scripts) import sớm
+def _patch_starlette_config_encoding() -> None:
+    try:
+        import starlette.config as _sc
+        if getattr(_sc.Config, "_dutybot_patched", False):
+            return
+        _orig_read = _sc.Config._read_file
+
+        def _safe_read_file(self, file_path):
+            if file_path is None:
+                return {}
+            try:
+                return _orig_read(self, file_path)
+            except UnicodeDecodeError:
+                # Fallback: đọc lại bằng UTF-8 và parse thủ công
+                import codecs
+                try:
+                    data = {}
+                    with codecs.open(str(file_path), encoding="utf-8-sig") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#") or "=" not in line:
+                                continue
+                            k, _, v = line.partition("=")
+                            data[k.strip()] = v.strip().strip("\"'")
+                    return data
+                except Exception:
+                    return {}
+
+        _sc.Config._read_file = _safe_read_file
+        _sc.Config._dutybot_patched = True
+    except (ImportError, AttributeError):
+        pass
+
+_patch_starlette_config_encoding()
+# ──────────────────────────────────────────────────────────────────────────────
+
+load_dotenv(encoding="utf-8")
 
 
 def _parse_database_url(url: str) -> dict:

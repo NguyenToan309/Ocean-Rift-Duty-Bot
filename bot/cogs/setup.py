@@ -117,7 +117,9 @@ class SetupCog(commands.Cog):
 
             config = await _get_or_create_config(session, interaction)
             role_map = dict(config.role_map or {})
-            role_map[quyen] = role.id
+            # Lưu role_id dưới dạng string trong JSON: tránh mất chính xác snowflake 64-bit
+            # Permissions check sẽ int(role_id) khi đọc — an toàn cho cả int/str
+            role_map[quyen] = str(role.id)
             config.role_map = role_map
             config.updated_at = utcnow()
 

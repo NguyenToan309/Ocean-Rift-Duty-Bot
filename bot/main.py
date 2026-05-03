@@ -1,5 +1,5 @@
 """
-bot/main.py — Entrypoint Discord bot
+bot/main.py — Entrypoint Discord bot Homie Medic
 Khởi động: python -m bot.main
 """
 import asyncio
@@ -57,10 +57,14 @@ class DutyBot(commands.Bot):
 
     async def setup_hook(self):
         """Chạy trước khi bot kết nối — load cogs và sync slash commands"""
-        # Tạo bảng DB nếu chưa có (chỉ dùng khi dev, production dùng alembic)
-        if settings.DEBUG:
+        # Tạo bảng DB chỉ khi env CREATE_TABLES_ON_START=true (mặc định production dùng alembic)
+        # Tránh xung đột schema giữa create_all() và alembic migrations.
+        if os.getenv("CREATE_TABLES_ON_START", "").lower() == "true":
             await create_all_tables()
-            logger.info("Đã tạo/kiểm tra tables (DEBUG mode)")
+            logger.warning(
+                "Đã chạy create_all_tables() — flag CREATE_TABLES_ON_START=true. "
+                "Production nên dùng `alembic upgrade head` thay vì cờ này."
+            )
 
         # Load tất cả cogs
         for cog in COGS:
@@ -75,12 +79,12 @@ class DutyBot(commands.Bot):
         logger.info(f"Synced {len(synced)} slash commands")
 
     async def on_ready(self):
-        logger.info(f"Bot đã online: {self.user} (ID: {self.user.id})")
+        logger.info(f"Homie Medic đã online: {self.user} (ID: {self.user.id})")
         logger.info(f"Đang phục vụ {len(self.guilds)} guild(s)")
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="chấm công | /log upload"
+                name="Homie Medic | /log upload"
             )
         )
 
