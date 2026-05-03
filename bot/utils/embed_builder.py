@@ -266,7 +266,9 @@ def build_log_confirm_embed(
     title = "⚠️ Xác nhận lưu LOG DUTY (nhận dạng không chắc)" if is_loose_match else "✅ Xác nhận lưu LOG DUTY"
 
     embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="👤 Tên", value=parsed_data["username"], inline=True)
+    # Escape markdown trong username để chặn user chèn [link](url), **bold**, @mention
+    safe_username = discord.utils.escape_markdown(str(parsed_data["username"]))
+    embed.add_field(name="👤 Tên", value=safe_username, inline=True)
     embed.add_field(name="⏱ Thời gian", value=minutes_to_hhmm(parsed_data["duration_minutes"]), inline=True)
     embed.add_field(name="🕐 Bắt đầu", value=format_datetime_vn(parsed_data["started_at"], guild_tz), inline=False)
     embed.add_field(name="🕑 Kết thúc", value=format_datetime_vn(parsed_data["ended_at"], guild_tz), inline=False)
@@ -286,3 +288,179 @@ def build_success_embed(message: str, title: str = "✅ Thành công") -> discor
 
 def build_info_embed(message: str, title: str = "ℹ️ Thông báo") -> discord.Embed:
     return discord.Embed(title=title, description=message, color=COLOR_INFO)
+
+
+# ─── Auto-scan embeds ────────────────────────────────────────────────────────
+
+SUPPORT_FOOTER = "Nếu cần hỗ trợ vui lòng liên hệ ban lãnh đạo"
+
+
+def build_log_accepted_embed(
+    parsed,
+    author: discord.abc.User,
+    guild_tz: str | None = None,
+) -> discord.Embed:
+    """
+    Embed xác nhận đã lưu thành công khi auto-scan log trong channel chấm công.
+    Hiển thị đầy đủ thông tin ca trực để member kiểm tra lại.
+    """
+    embed = discord.Embed(
+        title="✅ Đã ghi nhận ca trực",
+        description=f"Cảm ơn **{discord.utils.escape_markdown(author.display_name)}** đã chấm công đúng giờ!",
+        color=COLOR_SUCCESS,
+    )
+
+    safe_username = discord.utils.escape_markdown(parsed.username)
+    embed.add_field(name="👤 Tên", value=safe_username, inline=True)
+    embed.add_field(
+        name="⏱ Thời gian",
+        value=f"**{minutes_to_hhmm(parsed.duration_minutes)}**",
+        inline=True,
+    )
+    embed.add_field(name="​", value="​", inline=True)  # spacer
+    embed.add_field(
+        name="🕐 Bắt đầu",
+        value=format_datetime_vn(parsed.started_at, guild_tz),
+        inline=True,
+    )
+    embed.add_field(
+        name="🕑 Kết thúc",
+        value=format_datetime_vn(parsed.ended_at, guild_tz),
+        inline=True,
+    )
+    embed.add_field(name="​", value="​", inline=True)
+
+    # Avatar người gửi
+    if hasattr(author, "display_avatar") and author.display_avatar:
+        embed.set_thumbnail(url=author.display_avatar.url)
+
+    embed.set_footer(text=f"{SUPPORT_FOOTER} • {utcnow().strftime('%H:%M %d/%m/%Y')} UTC")
+    return embed
+
+
+def build_log_rejected_embed(
+    parsed,
+    reason: str,
+    author: discord.abc.User,
+) -> discord.Embed:
+    """
+    Embed từ chối log với lý do rõ ràng.
+    Dùng khi auto-scan parse được nhưng vi phạm rule (overlap, tương lai, etc.)
+    """
+    embed = discord.Embed(
+        title="🚫 Log chấm công bị từ chối",
+        description=(
+            f"**{discord.utils.escape_markdown(author.display_name)}**, "
+            "log của bạn không thể được lưu vì lý do bên dưới:"
+        ),
+        color=COLOR_ERROR,
+    )
+
+    embed.add_field(name="📋 Lý do", value=reason, inline=False)
+
+    if parsed is not None:
+        safe_username = discord.utils.escape_markdown(parsed.username)
+        info_lines = [
+            f"**Tên:** {safe_username}",
+            f"**Thời gian:** {minutes_to_hhmm(parsed.duration_minutes)}",
+            f"**Bắt đầu:** `{parsed.started_at.strftime('%d/%m/%Y %H:%M')}`",
+            f"**Kết thúc:** `{parsed.ended_at.strftime('%d/%m/%Y %H:%M')}`",
+        ]
+        embed.add_field(name="📄 Thông tin log", value="\n".join(info_lines), inline=False)
+
+    embed.add_field(
+        name="💡 Gợi ý",
+        value=(
+            "• Kiểm tra lại thời gian, tên trong log có khớp tài khoản Discord của bạn không.\n"
+            "• Đảm bảo ca trực không trùng/chồng lên ca đã chấm trước đó.\n"
+            "• Không log ca trực ở **tương lai** — phải đợi đến khi ca thực sự kết thúc."
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text=SUPPORT_FOOTER)
+    return embed
+
+
+def build_log_invalid_embed(
+    errors: list[str],
+    author: discord.abc.User,
+) -> discord.Embed:
+    """
+    Embed báo lỗi validation khi parse được LOG DUTY nhưng dữ liệu sai logic
+    (duration không khớp, start ≥ end, duration > 24h, etc.)
+    """
+    embed = discord.Embed(
+        title="⚠️ Dữ liệu LOG DUTY không hợp lệ",
+        description=(
+            f"**{discord.utils.escape_markdown(author.display_name)}**, "
+            "bot đã đọc được log của bạn nhưng dữ liệu chưa đúng:"
+        ),
+        color=COLOR_WARNING,
+    )
+    embed.add_field(
+        name="❌ Vấn đề",
+        value="\n".join(f"• {e}" for e in errors),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Cách xử lý",
+        value=(
+            "• Kiểm tra lại định dạng ngày giờ: `DD/MM/YYYY HH:MM:SS`.\n"
+            "• Đảm bảo **Thời gian làm việc** khớp với khoảng cách giữa Bắt đầu và Kết thúc.\n"
+            "• Mỗi ca trực không được dài quá 24 giờ."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=SUPPORT_FOOTER)
+    return embed
+
+
+def build_log_name_mismatch_embed(
+    parsed_name: str,
+    author: discord.abc.User,
+) -> discord.Embed:
+    """
+    Embed khi tên trong LOG DUTY không khớp với người gửi.
+    Mỗi user CHỈ được tự gửi log của chính mình.
+    """
+    embed = discord.Embed(
+        title="🚫 Tên không khớp",
+        description=(
+            f"Tên trong LOG DUTY là **{discord.utils.escape_markdown(parsed_name)}** "
+            f"nhưng bạn đang đăng nhập bằng **{discord.utils.escape_markdown(author.display_name)}**."
+        ),
+        color=COLOR_ERROR,
+    )
+    embed.add_field(
+        name="📌 Quy tắc",
+        value=(
+            "Mỗi người chỉ được gửi log chấm công của **chính mình**. "
+            "Mod/Admin **KHÔNG** được gửi hộ — đảm bảo tính chính xác và truy vết."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Gợi ý",
+        value=(
+            "• Kiểm tra lại tên trong LOG DUTY phải khớp **display name / nickname** Discord của bạn.\n"
+            "• Nếu chưa đổi tên Discord cho khớp, vui lòng đổi rồi gửi lại."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=SUPPORT_FOOTER)
+    return embed
+
+
+def build_log_duplicate_embed(author: discord.abc.User) -> discord.Embed:
+    """Embed nhẹ thông báo log đã được lưu trước đó (duplicate)."""
+    embed = discord.Embed(
+        title="🔁 Log đã được ghi nhận trước đó",
+        description=(
+            f"**{discord.utils.escape_markdown(author.display_name)}**, "
+            "ca trực này đã có trong hệ thống. Không cần gửi lại."
+        ),
+        color=COLOR_INFO,
+    )
+    embed.set_footer(text=SUPPORT_FOOTER)
+    return embed

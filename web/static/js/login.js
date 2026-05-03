@@ -1,12 +1,14 @@
 // login.js — Xử lý OAuth2 callback và 2FA verify
+// Backend set cookie HttpOnly `2fa_pending` + redirect về `/?require_2fa=1`
+// Frontend chỉ cần đọc query flag và gọi POST /auth/verify-2fa (cookie tự gửi)
 
-let tempToken = null;
-
-// Kiểm tra URL params sau khi OAuth callback
 const params = new URLSearchParams(window.location.search);
-if (params.get("require_2fa") === "true") {
-    tempToken = params.get("temp_token");
+if (params.get("require_2fa") === "1") {
     document.getElementById("modal-2fa").classList.remove("hidden");
+    // Auto-focus input để user gõ ngay
+    setTimeout(() => document.getElementById("otp-input")?.focus(), 100);
+    // Dọn URL — không lưu lại flag trong history
+    window.history.replaceState({}, "", "/");
 }
 
 async function verify2FA() {
@@ -25,13 +27,13 @@ async function verify2FA() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
-            body: JSON.stringify({ temp_token: tempToken, otp_code: otp }),
+            body: JSON.stringify({ otp_code: otp }),  // temp_token đã có trong cookie
         });
 
         if (resp.ok) {
             window.location.href = "/dashboard";
         } else {
-            const data = await resp.json();
+            const data = await resp.json().catch(() => ({}));
             errorEl.textContent = data.detail || "Mã OTP không đúng";
             errorEl.classList.remove("hidden");
         }

@@ -14,11 +14,9 @@ from models.duty_log import DutyLog
 from models.guild import GuildConfig
 from bot.utils.permissions import require_mod, send_no_permission, DutyRole
 from bot.utils.embed_builder import build_top_embed, build_error_embed
-from bot.utils.time_utils import get_period_range, get_custom_range
+from bot.utils.time_utils import get_period_range, get_custom_range, make_period_choices
 
 logger = logging.getLogger(__name__)
-
-PeriodChoice = app_commands.Choice
 
 
 async def _get_ranking(
@@ -79,13 +77,7 @@ class RankingCog(commands.Cog):
         tu_ngay="Từ ngày (DD/MM/YYYY) — nếu chọn 'tuy_chinh'",
         den_ngay="Đến ngày (DD/MM/YYYY) — nếu chọn 'tuy_chinh'",
     )
-    @app_commands.choices(ky=[
-        PeriodChoice(name="📅 Hôm nay", value="day"),
-        PeriodChoice(name="📆 Tuần này", value="week"),
-        PeriodChoice(name="🗓️ Tháng này", value="month"),
-        PeriodChoice(name="📊 Quý này", value="quarter"),
-        PeriodChoice(name="🔧 Tùy chỉnh ngày", value="custom"),
-    ])
+    @app_commands.choices(ky=make_period_choices())
     @app_commands.checks.cooldown(rate=10, per=60.0)
     async def top(
         self,
@@ -138,13 +130,7 @@ class RankingCog(commands.Cog):
         tu_ngay="Từ ngày (DD/MM/YYYY) — nếu chọn 'tuy_chinh'",
         den_ngay="Đến ngày (DD/MM/YYYY) — nếu chọn 'tuy_chinh'",
     )
-    @app_commands.choices(ky=[
-        PeriodChoice(name="📅 Hôm nay", value="day"),
-        PeriodChoice(name="📆 Tuần này", value="week"),
-        PeriodChoice(name="🗓️ Tháng này", value="month"),
-        PeriodChoice(name="📊 Quý này", value="quarter"),
-        PeriodChoice(name="🔧 Tùy chỉnh ngày", value="custom"),
-    ])
+    @app_commands.choices(ky=make_period_choices())
     @app_commands.checks.cooldown(rate=10, per=60.0)
     async def bottom(
         self,

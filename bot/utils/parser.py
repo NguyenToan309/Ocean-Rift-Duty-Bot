@@ -1,6 +1,11 @@
 """
 parser.py — Parse text LOG DUTY từ tin nhắn forward hoặc kết quả OCR
-Trả về dict hoặc None nếu không hợp lệ
+Trả về ParsedDutyLog hoặc None nếu không hợp lệ
+
+Lưu ý validate():
+- Cho phép ngày trong QUÁ KHỨ bất kỳ (không giới hạn)
+- Không cho phép ca trực ở TƯƠNG LAI (check sau to_utc() trong _save_duty_log)
+- Kiểm tra started_at < ended_at và duration khớp thực tế (±5 phút)
 """
 import re
 from datetime import datetime
@@ -39,34 +44,43 @@ DUTY_LOG_LOOSE_PATTERN = re.compile(
 class ParsedDutyLog:
     username: str
     duration_minutes: int
-    started_at: datetime
-    ended_at: datetime
+    started_at: datetime   # naive — sẽ được to_utc() trước khi lưu DB
+    ended_at: datetime     # naive — sẽ được to_utc() trước khi lưu DB
     raw_text: str
     is_loose_match: bool = False  # True nếu dùng regex lỏng
 
     def validate(self) -> list[str]:
         """
-        Trả về danh sách lỗi validation.
-        Danh sách rỗng = hợp lệ.
+        Kiểm tra tính hợp lệ của dữ liệu parse được.
+        Trả về danh sách lỗi — rỗng = hợp lệ.
+
+        LƯU Ý: validate() chạy trên naive datetime (chưa to_utc).
+        Kiểm tra "không ở tương lai" được thực hiện SAU to_utc() trong _save_duty_log.
+        Cho phép ngày bất kỳ trong quá khứ.
         """
         errors: list[str] = []
 
-        if not self.username or len(self.username) > 100:
-            errors.append("Tên người dùng không hợp lệ hoặc quá dài")
+        if not self.username or len(self.username.strip()) == 0:
+            errors.append("Tên người dùng không được để trống")
+        elif len(self.username) > 100:
+            errors.append("Tên người dùng quá dài (tối đa 100 ký tự)")
 
-        if self.duration_minutes <= 0 or self.duration_minutes > 1440:
+        if self.duration_minutes <= 0:
             errors.append(f"Thời gian làm việc không hợp lệ: {self.duration_minutes} phút")
+        elif self.duration_minutes > 1440:
+            errors.append(f"Thời gian làm việc quá dài: {self.duration_minutes} phút (tối đa 24 giờ/ca)")
 
         if self.started_at >= self.ended_at:
             errors.append("Thời gian bắt đầu phải trước thời gian kết thúc")
-
-        # Cho phép sai lệch tối đa 5 phút giữa duration và thực tế
-        actual_minutes = int((self.ended_at - self.started_at).total_seconds() / 60)
-        if abs(actual_minutes - self.duration_minutes) > 5:
-            errors.append(
-                f"Thời gian không khớp: ghi {self.duration_minutes} phút "
-                f"nhưng thực tế {actual_minutes} phút"
-            )
+        else:
+            # Cho phép sai lệch tối đa 5 phút giữa duration ghi và thực tế
+            actual_minutes = int((self.ended_at - self.started_at).total_seconds() / 60)
+            if abs(actual_minutes - self.duration_minutes) > 5:
+                errors.append(
+                    f"Thời gian không khớp: ghi {self.duration_minutes} phút "
+                    f"nhưng thực tế {actual_minutes} phút "
+                    f"(chênh lệch {abs(actual_minutes - self.duration_minutes)} phút)"
+                )
 
         return errors
 
@@ -119,7 +133,6 @@ def parse_duty_text(text: str) -> ParsedDutyLog | None:
 
     text = text.strip()
     # Chuẩn hoá: thay 1 số ký tự OCR hay đọc nhầm thành tương đương
-    # 'l' và '1' và 'I'; 'O' và '0' trong ngữ cảnh số
     # Bỏ ký tự đặc biệt thường gặp ở đầu/giữa (icons, dấu •)
     text = re.sub(r"[•·●○◦▾▸▼►]+", " ", text)
 
@@ -150,7 +163,6 @@ def parse_duty_text(text: str) -> ParsedDutyLog | None:
             is_loose_match=is_loose,
         )
     except (ValueError, AttributeError) as e:
-        # Log lỗi parse nhưng không raise — trả về None để caller xử lý
-        import logging
-        logging.getLogger(__name__).warning(f"Parse duty log thất bại: {e} | text={text[:200]}")
+        import logging as _logging
+        _logging.getLogger(__name__).warning(f"Parse duty log thất bại: {e} | text={text[:200]}")
         return None
