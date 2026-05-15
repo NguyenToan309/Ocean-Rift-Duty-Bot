@@ -1,0 +1,88 @@
+/* ============================================================
+   SKELETON LOADERS — shimmer placeholders
+   Use [aria-busy="true"] on container; .skeleton on visual blocks
+   ============================================================ */
+
+.skeleton {
+  display: block;
+  background: linear-gradient(
+    90deg,
+    var(--c-surface-2) 0%,
+    var(--c-surface-hover) 50%,
+    var(--c-surface-2) 100%
+  );
+  background-size: 200% 100%;
+  border-radius: var(--r-sm);
+  animation: skeleton-shimmer 1.4s var(--ease-in-out) infinite;
+  color: transparent;
+  user-select: none;
+}
+
+.skeleton--text   { height: 1em; width: 100%; border-radius: var(--r-xs); }
+.skeleton--title  { height: 1.4em; width: 60%; }
+.skeleton--metric { height: 2.4em; width: 50%; }
+.skeleton--avatar { width: 32px; height: 32px; border-radius: 50%; }
+.skeleton--card   { height: 100%; min-height: 96px; border-radius: var(--r-lg); }
+.skeleton--row    { height: 18px; margin-bottom: var(--sp-2); }
+
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.empty {
+  text-align: center;
+  padding: var(--sp-12) var(--sp-4);
+  color: var(--c-text-muted);
+}
+.empty__icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto var(--sp-3);
+  color: var(--c-text-muted);
+  opacity: 0.55;
+}
+.empty__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--c-text-secondary);
+  margin-bottom: var(--sp-1);
+}
+.empty__hint {
+  font-size: var(--fs-sm);
+  color: var(--c-text-muted);
+  max-width: 40ch;
+  margin: 0 auto;
+}
+
+/* ============================================================
+   PROGRESS BAR
+   ============================================================ */
+.progress {
+  height: 6px;
+  background: var(--c-surface-2);
+  border-radius: var(--r-full);
+  overflow: hidden;
+  position: relative;
+}
+.progress__bar {
+  height: 100%;
+  background: var(--c-brand);
+  border-radius: var(--r-full);
+  transition: width var(--dur-slow) var(--ease-out);
+}
+.progress--success .progress__bar { background: var(--c-success); }
+.progress--warning .progress__bar { background: var(--c-warning); }
+.progress--danger  .progress__bar { background: var(--c-danger); }
+
+.progress--indeterminate .progress__bar {
+  width: 30%;
+  animation: progress-march 1.4s var(--ease-in-out) infinite;
+}
+@keyframes progress-march {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
