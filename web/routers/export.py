@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import jwt, JWTError
 from fastapi import Request
@@ -23,7 +23,7 @@ from models.token_blacklist import BlacklistedToken
 from models.audit_log import AuditLog, AuditAction
 from web.middleware.auth_guard import require_auth, require_guild_role
 from web.middleware.rate_limit import limiter
-from bot.utils.time_utils import get_period_range, get_custom_range, utcnow
+from bot.utils.time_utils import get_period_range, get_custom_range, utcnow, minutes_to_hhmm
 from bot.config import settings
 from utils.export_utils import logs_to_dataframe, generate_csv_bytes, generate_excel_bytes, sign_file
 
@@ -34,15 +34,17 @@ ALGORITHM = "HS256"
 # Whitelist các giá trị an toàn — phòng filename injection
 VALID_PERIODS = {"day", "week", "month", "quarter", "custom"}
 VALID_FORMATS = {"csv", "excel"}
+VALID_MODES = {"logs", "ranking"}
 
 
-def generate_download_token(user_id: int, guild_id: int, format: str, period: str) -> str:
+def generate_download_token(user_id: int, guild_id: int, format: str, period: str, mode: str = "logs") -> str:
     """Tạo one-time download token, hết hạn sau EXPORT_TTL_MINUTES"""
     payload = {
         "sub": str(user_id),
         "guild_id": guild_id,
         "format": format,
         "period": period,
+        "mode": mode,
         "type": "download",
         "jti": secrets.token_hex(16),
         "exp": utcnow() + timedelta(minutes=settings.EXPORT_TTL_MINUTES),
@@ -57,6 +59,7 @@ async def prepare_export(
     guild_id: int = Query(...),
     format: str = Query(..., description="csv|excel"),
     period: str = Query("month"),
+    mode: str = Query("logs", description="logs (raw duty logs) | ranking (1 row/user)"),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     session: AsyncSession = Depends(get_db),
@@ -65,16 +68,21 @@ async def prepare_export(
     """
     Tạo download token → trả URL download dùng 1 lần.
     Client dùng URL này để tải file trong 10 phút.
+
+    mode='logs' (default): raw từng duty log
+    mode='ranking': aggregate theo user (1 row/người, sort theo tổng phút giảm dần)
     """
     if format not in VALID_FORMATS:
         raise HTTPException(status_code=400, detail="Format phải là csv hoặc excel")
     if period not in VALID_PERIODS:
         raise HTTPException(status_code=400, detail=f"Period không hợp lệ. Chọn: {', '.join(VALID_PERIODS)}")
+    if mode not in VALID_MODES:
+        raise HTTPException(status_code=400, detail=f"Mode không hợp lệ. Chọn: {', '.join(VALID_MODES)}")
 
     await require_guild_role(guild_id, "DUTY_MOD", current_user, session)
 
     user_id = int(current_user["sub"])
-    token = generate_download_token(user_id, guild_id, format, period)
+    token = generate_download_token(user_id, guild_id, format, period, mode)
 
     return {
         "download_url": f"/api/export/download?token={token}",
@@ -105,6 +113,7 @@ async def download_export(
     guild_id = payload["guild_id"]
     format = payload["format"]
     period = payload["period"]
+    mode = payload.get("mode", "logs")
     user_id = int(payload["sub"])
     exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
 
@@ -132,33 +141,71 @@ async def download_export(
         start, end = get_period_range(period, tz_str=guild_tz)
         period_label = {"day": "Hôm nay", "week": "Tuần này", "month": "Tháng này", "quarter": "Quý này"}.get(period, period)
 
-    logs_result = await session.execute(
-        select(DutyLog)
-        .where(DutyLog.guild_id == guild_id)
-        .where(DutyLog.started_at >= start)
-        .where(DutyLog.started_at <= end)
-        .order_by(DutyLog.started_at.asc())
-    )
-    logs = logs_result.scalars().all()
+    if mode == "ranking":
+        # Aggregate: 1 row/user, sort desc theo tổng phút
+        rank_result = await session.execute(
+            select(
+                DutyLog.user_id,
+                DutyLog.username,
+                func.sum(DutyLog.duration_minutes).label("total_minutes"),
+                func.count(DutyLog.id).label("session_count"),
+                func.min(DutyLog.started_at).label("first_log"),
+                func.max(DutyLog.started_at).label("last_log"),
+            )
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+            .group_by(DutyLog.user_id, DutyLog.username)
+            .order_by(func.sum(DutyLog.duration_minutes).desc())
+        )
+        rank_rows = rank_result.all()
+        import pandas as pd
+        df = pd.DataFrame([
+            {
+                "Thứ hạng": i + 1,
+                "Discord User ID": r.user_id,
+                "Tên hiển thị": r.username,
+                "Tổng phút": r.total_minutes,
+                "Tổng giờ (thập phân)": round(r.total_minutes / 60, 2),
+                "Tổng giờ (h/m)": minutes_to_hhmm(r.total_minutes),
+                "Số ca": r.session_count,
+                "TB/ca (phút)": round(r.total_minutes / r.session_count, 1) if r.session_count else 0,
+                "Ca đầu tiên": r.first_log.isoformat() if r.first_log else "",
+                "Ca gần nhất": r.last_log.isoformat() if r.last_log else "",
+            }
+            for i, r in enumerate(rank_rows)
+        ])
+        rows_count = len(rank_rows)
+    else:
+        logs_result = await session.execute(
+            select(DutyLog)
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+            .order_by(DutyLog.started_at.asc())
+        )
+        logs = logs_result.scalars().all()
+        df = logs_to_dataframe(logs, guild_name)
+        rows_count = len(logs)
 
     session.add(AuditLog(
         guild_id=guild_id, user_id=user_id, username="web_user",
         action=AuditAction.EXPORT_CSV if format == "csv" else AuditAction.EXPORT_EXCEL,
-        detail={"period": period, "rows": len(logs)},
+        detail={"period": period, "mode": mode, "rows": rows_count},
         created_at=utcnow(),
     ))
     await session.commit()
 
-    df = logs_to_dataframe(logs, guild_name)
     timestamp = utcnow().strftime("%Y%m%d_%H%M%S")
+    filename_prefix = "ranking" if mode == "ranking" else "duty_log"
 
     if format == "csv":
         file_bytes = generate_csv_bytes(df)
-        filename = f"duty_log_{guild_id}_{period}_{timestamp}.csv"
+        filename = f"{filename_prefix}_{guild_id}_{period}_{timestamp}.csv"
         media_type = "text/csv"
     else:
         file_bytes = generate_excel_bytes(df, period_label)
-        filename = f"duty_log_{guild_id}_{period}_{timestamp}.xlsx"
+        filename = f"{filename_prefix}_{guild_id}_{period}_{timestamp}.xlsx"
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     return StreamingResponse(

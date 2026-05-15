@@ -1,0 +1,108 @@
+/* ============================================================
+   FORMS — input, select, textarea, label, helptext
+   ============================================================ */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.field__label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--c-text-secondary);
+  letter-spacing: var(--ls-snug);
+}
+
+.field__label--required::after {
+  content: " *";
+  color: var(--c-danger);
+}
+
+.field__hint {
+  font-size: var(--fs-xs);
+  color: var(--c-text-muted);
+}
+
+.field__error {
+  font-size: var(--fs-xs);
+  color: var(--c-danger-text);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  padding: 0 var(--sp-3);
+  height: 36px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  color: var(--c-text-primary);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  transition:
+    border-color var(--dur-fast) var(--ease-snappy),
+    box-shadow var(--dur-fast) var(--ease-snappy),
+    background-color var(--dur-fast) var(--ease-snappy);
+}
+
+.input::placeholder,
+.textarea::placeholder { color: var(--c-text-muted); }
+
+.input:hover,
+.select:hover,
+.textarea:hover { border-color: var(--c-text-muted); }
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--c-border-focus);
+  box-shadow: var(--sh-ring-focus);
+}
+
+.input[aria-invalid="true"],
+.select[aria-invalid="true"],
+.textarea[aria-invalid="true"] {
+  border-color: var(--c-danger);
+}
+
+.textarea {
+  height: auto;
+  min-height: 88px;
+  padding: var(--sp-2) var(--sp-3);
+  line-height: var(--lh-snug);
+  resize: vertical;
+}
+
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right var(--sp-3) center;
+  padding-right: var(--sp-8);
+  cursor: pointer;
+}
+
+/* Sizes */
+.input--sm { height: 30px; font-size: var(--fs-xs); }
+.input--lg { height: 44px; font-size: var(--fs-md); }
+
+/* Inline icon prefix */
+.input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-group .input { padding-left: 36px; }
+.input-group__icon {
+  position: absolute;
+  left: var(--sp-3);
+  width: 14px;
+  height: 14px;
+  color: var(--c-text-muted);
+  pointer-events: none;
+}

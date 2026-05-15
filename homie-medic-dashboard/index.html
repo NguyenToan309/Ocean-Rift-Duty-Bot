@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="vi" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Homie Medic — Hệ thống quản lý chấm công và lịch trực ngành y" />
+    <title>Homie Medic — Dashboard</title>
+  </head>
+  <body>
+    <div id="root">
+      <!-- Fallback rendered nếu JS chưa mount — sẽ bị React thay thế ngay khi mount xong -->
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#020617;color:#94a3b8;font-family:system-ui,sans-serif;">
+        <div style="text-align:center;">
+          <div style="width:32px;height:32px;border:2px solid #3b82f6;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px;"></div>
+          <p style="font-size:14px;">Đang khởi động Homie Medic…</p>
+          <noscript>
+            <p style="color:#f43f5e;margin-top:16px;">Trang này cần JavaScript. Vui lòng bật JavaScript trong trình duyệt.</p>
+          </noscript>
+        </div>
+      </div>
+    </div>
+    <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

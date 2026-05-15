@@ -1,0 +1,114 @@
+/* ============================================================
+   LOGIN PAGE
+   ============================================================ */
+
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6);
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(59, 130, 246, 0.12), transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(139, 92, 246, 0.10), transparent 50%),
+    var(--c-bg);
+}
+
+.login__card {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--sp-8);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-2xl);
+  box-shadow: var(--sh-xl);
+  text-align: center;
+  animation: login-rise var(--dur-slow) var(--ease-spring);
+}
+
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.login__logo {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto var(--sp-5);
+  border-radius: var(--r-lg);
+  background: linear-gradient(135deg, var(--blue-500), var(--violet-500));
+  color: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: var(--sh-glow-brand);
+}
+
+.login__title {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--ls-tight);
+  color: var(--c-text-primary);
+  margin-bottom: var(--sp-2);
+}
+
+.login__subtitle {
+  font-size: var(--fs-sm);
+  color: var(--c-text-tertiary);
+  margin-bottom: var(--sp-6);
+  line-height: var(--lh-relaxed);
+}
+
+.login__btn {
+  width: 100%;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4);
+  background: #5865f2; /* Discord brand — keep literal */
+  color: #fff;
+  border-radius: var(--r-md);
+  border: 1px solid #5865f2;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-snappy),
+    transform var(--dur-fast) var(--ease-snappy),
+    box-shadow var(--dur-fast) var(--ease-snappy);
+}
+
+.login__btn:hover {
+  background: #4752c4;
+  box-shadow: 0 8px 24px rgba(88, 101, 242, 0.32);
+  transform: translateY(-1px);
+}
+
+.login__btn:active { transform: translateY(0); }
+
+.login__footer {
+  font-size: var(--fs-xs);
+  color: var(--c-text-muted);
+  margin-top: var(--sp-5);
+}
+
+/* 2FA OTP input */
+.otp-input {
+  width: 100%;
+  height: 50px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.4em;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  color: var(--c-text-primary);
+  transition: border-color var(--dur-fast) var(--ease-snappy);
+}
+.otp-input:focus {
+  outline: none;
+  border-color: var(--c-brand);
+  box-shadow: var(--sh-ring-focus);
+}

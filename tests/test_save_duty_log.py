@@ -63,8 +63,8 @@ class TestLayer0Future:
 
     async def test_past_start_passes_layer0(self):
         """started_at trong quá khứ → qua được tầng 0, tiếp tục kiểm tra các tầng sau"""
-        # make_session(None, None): tầng 2 = None (no dup), tầng 3 = None (no overlap)
-        session = make_session(None, None)
+        # make_session(None, None, None): tầng 2 = None (no dup), tầng 3 = None (no overlap)
+        session = make_session(None, None, None)
         log = await _save_duty_log(**BASE_PARAMS, session=session)
         assert log is not None
 
@@ -91,7 +91,7 @@ class TestLayer0Future:
         near_end = utcnow() + timedelta(minutes=3)
         actual_mins = int((near_end - past_s).total_seconds() / 60)
 
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(
             **{**BASE_PARAMS,
                "started_at": past_s,
@@ -111,7 +111,7 @@ class TestLayer1MessageId:
         """Execute #1 (source_message_id check) trả về existing → ValueError"""
         existing = make_duty_log_mock()
         # source_message_id != None → execute #1 là layer 1 check
-        session = make_session(existing)  # layer1 = existing → raise
+        session = make_session(None, existing)  # layer1 = existing → raise
         with pytest.raises(ValueError, match="duplicate|đã được lưu"):
             await _save_duty_log(
                 **{**BASE_PARAMS, "source_message_id": MSG_ID},
@@ -121,7 +121,7 @@ class TestLayer1MessageId:
     async def test_no_message_id_skips_layer1(self):
         """source_message_id=None → bỏ qua tầng 1, thực hiện tầng 2 và 3"""
         # source_message_id=None, không có exact dup, không có overlap
-        session = make_session(None, None)   # tầng 2 = None, tầng 3 = None
+        session = make_session(None, None, None)   # tầng 2 = None, tầng 3 = None
         log = await _save_duty_log(**BASE_PARAMS, session=session)
         assert log is not None
 
@@ -129,7 +129,7 @@ class TestLayer1MessageId:
         """source_message_id mới (không có trong DB) → qua tầng 1"""
         # execute #1 = None (không tìm thấy message_id này)
         # execute #2 = None (không dup), execute #3 = None (không overlap)
-        session = make_session(None, None, None)
+        session = make_session(None, None, None, None)
         log = await _save_duty_log(
             **{**BASE_PARAMS, "source_message_id": MSG_ID},
             session=session,
@@ -146,7 +146,7 @@ class TestLayer2ExactDuplicate:
         """Execute tầng 2 trả về existing log → ValueError 'đã được lưu'"""
         existing = make_duty_log_mock()
         # source_message_id=None → execute #1 = tầng 2, trả về existing
-        session = make_session(existing)
+        session = make_session(None, existing)
         with pytest.raises(ValueError, match="đã được lưu"):
             await _save_duty_log(**BASE_PARAMS, session=session)
 
@@ -154,7 +154,7 @@ class TestLayer2ExactDuplicate:
         """Cùng thời gian nhưng user khác → KHÔNG phải exact dup → được phép"""
         # Layer 2 trả None (vì query có guild_id+user_id filter — user khác thì kết quả khác)
         # Trong test: session mock trả None = "không tìm thấy"
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(
             **{**BASE_PARAMS, "user_id": USER_ID + 1},   # user khác
             session=session,
@@ -163,7 +163,7 @@ class TestLayer2ExactDuplicate:
 
     async def test_different_guild_same_data_allowed(self):
         """Cùng user+time nhưng guild khác → không phải dup của guild này"""
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(
             **{**BASE_PARAMS, "guild_id": GUILD_ID + 999},
             session=session,
@@ -174,7 +174,7 @@ class TestLayer2ExactDuplicate:
         """Cùng user nhưng thời gian khác → không phải exact dup"""
         other_start = T_START - timedelta(days=1)
         other_end = T_END - timedelta(days=1)
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(
             **{**BASE_PARAMS, "started_at": other_start, "ended_at": other_end},
             session=session,
@@ -191,7 +191,7 @@ class TestLayer3Overlap:
         """Ca mới nằm hoàn toàn bên trong ca cũ → ValueError 'chồng lấp'"""
         # Ca cũ 08:00-10:00, ca mới 08:30-09:30 (nằm trong)
         conflict = make_duty_log_mock(started_at=T_START, ended_at=T_END)
-        session = make_session(None, conflict)  # tầng2=None, tầng3=conflict
+        session = make_session(None, None, conflict)  # tầng2=None, tầng3=conflict
         with pytest.raises(ValueError, match="chồng lấp"):
             await _save_duty_log(**BASE_PARAMS, session=session)
 
@@ -200,7 +200,7 @@ class TestLayer3Overlap:
         conflict = make_duty_log_mock(started_at=T_START, ended_at=T_END)
         mid = T_START + timedelta(hours=1)      # 02:00 UTC = giữa ca cũ
         after = T_END + timedelta(hours=1)      # 04:00 UTC = sau ca cũ
-        session = make_session(None, conflict)
+        session = make_session(None, None, conflict)
         with pytest.raises(ValueError, match="chồng lấp"):
             await _save_duty_log(
                 **{**BASE_PARAMS, "started_at": mid, "ended_at": after,
@@ -213,7 +213,7 @@ class TestLayer3Overlap:
         conflict = make_duty_log_mock(started_at=T_START, ended_at=T_END)
         before = T_START - timedelta(hours=1)   # bắt đầu trước ca cũ
         mid = T_START + timedelta(hours=1)      # kết thúc giữa ca cũ
-        session = make_session(None, conflict)
+        session = make_session(None, None, conflict)
         with pytest.raises(ValueError, match="chồng lấp"):
             await _save_duty_log(
                 **{**BASE_PARAMS, "started_at": before, "ended_at": mid,
@@ -225,7 +225,7 @@ class TestLayer3Overlap:
         """Ca mới bắt đầu ĐÚNG lúc ca cũ kết thúc → hợp lệ (ca liên tiếp)"""
         # Thuật toán: A.start < B.end AND A.end > B.start
         # Ca mới start=T_END, end=T_END+2h → T_END < T_END? → False → không overlap
-        session = make_session(None, None)  # tầng3 trả None = không overlap
+        session = make_session(None, None, None)  # tầng3 trả None = không overlap
         new_start = T_END                   # = 03:00 UTC
         new_end = T_END + timedelta(hours=2)
         log = await _save_duty_log(
@@ -237,7 +237,7 @@ class TestLayer3Overlap:
 
     async def test_adjacent_shift_before_allowed(self):
         """Ca mới kết thúc ĐÚNG lúc ca cũ bắt đầu → hợp lệ"""
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         new_end = T_START                   # = 01:00 UTC
         new_start = T_START - timedelta(hours=2)
         log = await _save_duty_log(
@@ -249,7 +249,7 @@ class TestLayer3Overlap:
 
     async def test_past_non_overlapping_allowed(self):
         """Ca khác ngày hoàn toàn → không overlap"""
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         yesterday_start = T_START - timedelta(days=1)
         yesterday_end = T_END - timedelta(days=1)
         log = await _save_duty_log(
@@ -263,7 +263,7 @@ class TestLayer3Overlap:
         conflict = make_duty_log_mock(
             started_at=T_START, ended_at=T_END, duration_minutes=120
         )
-        session = make_session(None, conflict)
+        session = make_session(None, None, conflict)
         with pytest.raises(ValueError) as exc_info:
             await _save_duty_log(**BASE_PARAMS, session=session)
         msg = str(exc_info.value)
@@ -279,19 +279,19 @@ class TestSaveSuccess:
     async def test_returns_duty_log_object(self):
         """Hàm phải trả về DutyLog object khi thành công"""
         from models.duty_log import DutyLog
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(**BASE_PARAMS, session=session)
         assert isinstance(log, DutyLog)
 
     async def test_session_add_called(self):
         """session.add() phải được gọi với DutyLog object"""
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(**BASE_PARAMS, session=session)
         session.add.assert_called_once_with(log)
 
     async def test_saved_attributes_correct(self):
         """Các trường trong DutyLog phải khớp với input"""
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         log = await _save_duty_log(**BASE_PARAMS, session=session)
         assert log.guild_id == GUILD_ID
         assert log.user_id == USER_ID
@@ -303,7 +303,7 @@ class TestSaveSuccess:
 
     async def test_with_message_id_saved(self):
         """source_message_id được lưu vào log"""
-        session = make_session(None, None, None)
+        session = make_session(None, None, None, None)
         log = await _save_duty_log(
             **{**BASE_PARAMS, "source_message_id": MSG_ID},
             session=session,
@@ -312,6 +312,6 @@ class TestSaveSuccess:
 
     async def test_session_not_committed(self):
         """_save_duty_log không tự commit — caller chịu trách nhiệm commit"""
-        session = make_session(None, None)
+        session = make_session(None, None, None)
         await _save_duty_log(**BASE_PARAMS, session=session)
         session.commit.assert_not_called()

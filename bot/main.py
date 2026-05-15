@@ -31,6 +31,10 @@ COGS = [
     "bot.cogs.stats",
     "bot.cogs.export",
     "bot.cogs.setup",
+    "bot.cogs.schedule",
+    "bot.cogs.leave",
+    "bot.cogs.discipline",
+    "bot.cogs.control_panel",
 ]
 
 
@@ -78,6 +82,10 @@ class DutyBot(commands.Bot):
         synced = await self.tree.sync()
         logger.info(f"Synced {len(synced)} slash commands")
 
+        # Khởi động background tasks (nhắc trực, EOD check, onboarding scan)
+        from bot.tasks.schedule_tasks import start_background_tasks
+        start_background_tasks(self)
+
     async def on_ready(self):
         logger.info(f"Homie Medic đã online: {self.user} (ID: {self.user.id})")
         logger.info(f"Đang phục vụ {len(self.guilds)} guild(s)")
@@ -91,6 +99,14 @@ class DutyBot(commands.Bot):
     async def on_guild_join(self, guild: discord.Guild):
         """Ghi log khi bot được thêm vào guild mới"""
         logger.info(f"Bot được thêm vào guild: {guild.name} (ID: {guild.id})")
+
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Real-time onboarding: khi member nhận role Medic mới → DM ngay"""
+        try:
+            from bot.tasks.schedule_tasks import on_member_role_update
+            await on_member_role_update(before, after, self)
+        except Exception as e:
+            logger.error(f"on_member_update handler lỗi: {e}", exc_info=True)
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: Exception

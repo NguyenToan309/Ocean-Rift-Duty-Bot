@@ -464,3 +464,78 @@ def build_log_duplicate_embed(author: discord.abc.User) -> discord.Embed:
     )
     embed.set_footer(text=SUPPORT_FOOTER)
     return embed
+
+
+def build_log_impersonation_embed(
+    parsed_name: str,
+    real_owner: "discord.Member",
+    sender: discord.abc.User,
+) -> discord.Embed:
+    """
+    Embed khi user cố gắng chấm công với tên của người khác.
+    Tên parsed thuộc về `real_owner`, không phải `sender`.
+    """
+    embed = discord.Embed(
+        title="🚫 Phát hiện chấm công thay người khác",
+        description=(
+            f"Tên trong LOG DUTY là **{discord.utils.escape_markdown(parsed_name)}** "
+            f"thuộc về **{discord.utils.escape_markdown(real_owner.display_name)}**, "
+            f"không phải **{discord.utils.escape_markdown(sender.display_name)}**."
+        ),
+        color=COLOR_ERROR,
+    )
+    embed.add_field(
+        name="📌 Quy tắc",
+        value=(
+            "Mỗi người chỉ được tự chấm công cho **chính mình**. "
+            "Đổi nickname để giả mạo người khác là **vi phạm**."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Cách xử lý",
+        value=(
+            "• Nếu bạn đúng là người chấm công, hãy gửi log với tên **của bạn**.\n"
+            "• Nếu định gửi giúp người khác, **không được phép** — yêu cầu họ tự gửi."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=SUPPORT_FOOTER)
+    return embed
+
+
+def build_log_ambiguous_name_embed(
+    parsed_name: str,
+    matches: list,
+    sender: discord.abc.User,
+) -> discord.Embed:
+    """
+    Embed khi tên trong LOG DUTY khớp với NHIỀU member trong server.
+    Yêu cầu user đặt nickname/display name rõ ràng hơn để phân biệt.
+    """
+    sample_names = ", ".join(
+        f"**{discord.utils.escape_markdown(m.display_name)}**"
+        for m in matches[:5]
+    )
+    if len(matches) > 5:
+        sample_names += f" (và {len(matches) - 5} người khác)"
+
+    embed = discord.Embed(
+        title="⚠️ Tên không xác định được duy nhất",
+        description=(
+            f"Tên **{discord.utils.escape_markdown(parsed_name)}** "
+            f"khớp với **{len(matches)} thành viên** trong server: {sample_names}."
+        ),
+        color=COLOR_WARNING,
+    )
+    embed.add_field(
+        name="💡 Cách xử lý",
+        value=(
+            "• Yêu cầu admin server đổi tên/nick để mỗi người có **tên duy nhất**.\n"
+            "• Hoặc trong LOG DUTY hãy ghi tên đầy đủ + định danh "
+            "(ví dụ: thêm họ, ngày sinh) để phân biệt."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=SUPPORT_FOOTER)
+    return embed
