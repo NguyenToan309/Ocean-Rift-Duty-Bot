@@ -4,7 +4,13 @@
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("require_2fa") === "1") {
-    document.getElementById("modal-2fa").classList.remove("hidden");
+    const modal = document.getElementById("modal-2fa");
+    if (window.HMUI && typeof window.HMUI.openModal === "function") {
+        window.HMUI.openModal(modal);
+    } else {
+        modal.removeAttribute("hidden");
+        modal.classList.remove("hidden");
+    }
     // Auto-focus input để user gõ ngay
     setTimeout(() => document.getElementById("otp-input")?.focus(), 100);
     // Dọn URL — không lưu lại flag trong history

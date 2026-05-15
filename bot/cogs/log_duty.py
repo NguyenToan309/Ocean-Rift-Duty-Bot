@@ -28,6 +28,7 @@ from bot.utils.embed_builder import (
     build_log_accepted_embed, build_log_rejected_embed,
     build_log_invalid_embed, build_log_name_mismatch_embed,
     build_log_duplicate_embed,
+    build_log_impersonation_embed, build_log_ambiguous_name_embed,
 )
 from bot.utils.time_utils import to_utc, utcnow
 
@@ -223,6 +224,35 @@ async def _save_duty_log(
     """
     now = utcnow()
 
+    # ── Tầng -1: Username lock — chống impersonation triệt để ──
+    # Mỗi `username` (sau normalize) trong 1 guild chỉ được thuộc về 1 user_id duy nhất.
+    # User đầu tiên submit log với tên X → tên X locked vào user_id đó forever.
+    # User khác cố gắng dùng tên X → REJECT.
+    #
+    # Đây là phòng tuyến cuối: ngay cả khi attacker bypass identity check
+    # (đổi nick thành tên victim), DB sẽ chặn vì username đã có owner khác.
+    parsed_lower = username.strip().lower()
+    if parsed_lower:
+        existing_owner = await session.execute(
+            select(DutyLog.user_id)
+            .where(DutyLog.guild_id == guild_id)
+            .where(func.lower(func.trim(DutyLog.username)) == parsed_lower)
+            .order_by(DutyLog.id.asc())
+            .limit(1)
+        )
+        first_owner_id = existing_owner.scalar_one_or_none()
+        if first_owner_id is not None and first_owner_id != user_id:
+            logger.warning(
+                f"[username-lock] User {user_id} cố gắng dùng tên '{username}' "
+                f"đã thuộc về user {first_owner_id} (lưu trước đó)"
+            )
+            raise ValueError(
+                f"Tên **{username}** đã được dùng bởi tài khoản khác trước đây. "
+                "Bạn không thể chấm công với tên này.\n\n"
+                "Nếu đây là tên thật của bạn (có user khác đã chiếm trước), "
+                "**vui lòng liên hệ ban lãnh đạo** để xử lý."
+            )
+
     # ── Tầng 0: Không cho phép ca trực ở tương lai ──
     if started_at > now + timedelta(minutes=30):
         raise ValueError(
@@ -286,6 +316,25 @@ async def _save_duty_log(
             "→ Hai ca trực không được trùng thời gian."
         )
 
+    # ── Auto-link với MemberSchedule (nếu có lịch khớp) ──
+    schedule_id: int | None = None
+    try:
+        from bot.utils.schedule_engine import find_matching_schedule
+        from models.guild import GuildConfig
+        # Lấy timezone của guild để engine tính weekday đúng
+        cfg_row = await session.execute(
+            select(GuildConfig.timezone).where(GuildConfig.guild_id == guild_id)
+        )
+        guild_tz = cfg_row.scalar_one_or_none() or "Asia/Ho_Chi_Minh"
+        matched = await find_matching_schedule(
+            session, guild_id, user_id, started_at, ended_at, guild_tz
+        )
+        if matched:
+            schedule_id = matched.id
+    except Exception as e:
+        # Auto-link là nice-to-have, không nên fail save log
+        logger.debug(f"Auto-link schedule skipped: {type(e).__name__}: {e}")
+
     log = DutyLog(
         guild_id=guild_id,
         user_id=user_id,
@@ -297,6 +346,7 @@ async def _save_duty_log(
         source=source,
         source_message_id=source_message_id,
         submitted_by=submitted_by,
+        schedule_id=schedule_id,
         created_at=utcnow(),
     )
     session.add(log)
@@ -314,38 +364,113 @@ def _normalize_name(s: str | None) -> str:
     )
 
 
-def _username_matches_author(parsed_name: str, author: discord.abc.User) -> bool:
+def _strip_role_tag(name: str | None) -> str:
     """
-    Kiểm tra tên parsed từ LOG DUTY có khớp với Discord author không.
-    So sánh với: name, global_name, display_name, nick (nếu là Member).
+    Bỏ các prefix kiểu role/squad tag để lấy tên thuần.
+    Hỗ trợ:
+      "[VT] Tom Nguyễn"   → "Tom Nguyễn"
+      "(EMS) Tom Nguyễn"  → "Tom Nguyễn"
+      "【VT】Tom Nguyễn"   → "Tom Nguyễn"
+      "VT | Tom Nguyễn"   → "Tom Nguyễn"
+      "VT - Tom Nguyễn"   → "Tom Nguyễn" (nếu VT ngắn)
 
-    Quy tắc substring match:
-    - Exact match luôn được chấp nhận
-    - Substring match chỉ được chấp nhận khi đoạn khớp >= 4 ký tự
-      (ngăn tên 1-2 chữ khớp bừa với mọi tên khác)
+    Trả về tên đã strip. Nếu không có pattern → trả về tên gốc.
     """
-    parsed_n = _normalize_name(parsed_name)
-    if not parsed_n:
-        return False
+    import re
+    if not name:
+        return ""
+    s = name.strip()
+    # [ABC] / (ABC) / 【ABC】 / 「ABC」 prefix (tag dài tối đa 15 ký tự)
+    s = re.sub(r"^[\[\(\{【「]([^\]\)\}】」]{1,15})[\]\)\}】」]\s*", "", s)
+    # "ABC | " hoặc "ABC• " prefix (tag dài tối đa 15 ký tự trước |)
+    s = re.sub(r"^[^|•]{1,15}[|•]\s*", "", s)
+    return s.strip()
 
-    candidates: list[str] = [
+
+def _identity_candidates(author: "discord.abc.User | discord.Member") -> list[str]:
+    """
+    Trả về tất cả tên định danh khả dĩ của 1 user — bao gồm cả raw và sau khi
+    strip role tag prefix. Dùng để so sánh STRICT exact match.
+    """
+    raw_fields = [
         getattr(author, "name", "") or "",
         getattr(author, "global_name", None) or "",
         getattr(author, "display_name", "") or "",
         getattr(author, "nick", None) or "",
     ]
-
-    for c in candidates:
-        c_n = _normalize_name(c)
-        if not c_n:
+    out: list[str] = []
+    for raw in raw_fields:
+        if not raw:
             continue
-        # Exact match
-        if parsed_n == c_n:
-            return True
-        # Substring match chỉ khi đủ dài (>= 4 ký tự) để tránh false positive
-        if len(parsed_n) >= 4 and parsed_n in c_n:
-            return True
-        if len(c_n) >= 4 and c_n in parsed_n:
+        out.append(raw)
+        stripped = _strip_role_tag(raw)
+        if stripped and stripped != raw:
+            out.append(stripped)
+    return out
+
+
+def _resolve_name_owner(
+    guild: discord.Guild | None,
+    parsed_name: str,
+) -> tuple[str, list[discord.Member]]:
+    """
+    Tìm tất cả member trong guild khớp với parsed_name (qua _username_matches_author).
+    Dùng để chống IMPERSONATION: user không thể đổi nick thành tên người khác để chấm công hộ.
+
+    Returns:
+        ("ok",        [member])    — chỉ DUY NHẤT 1 người khớp (an toàn)
+        ("ambiguous", [members])   — nhiều người khớp (cần đặt nick rõ ràng hơn)
+        ("none",      [])          — không ai trong server có tên này
+    """
+    if guild is None:
+        return "none", []
+    parsed_n = _normalize_name(parsed_name)
+    if not parsed_n:
+        return "none", []
+
+    matches: list[discord.Member] = []
+    for m in guild.members:
+        if _username_matches_author(parsed_name, m):
+            matches.append(m)
+
+    if not matches:
+        return "none", []
+    if len(matches) > 1:
+        return "ambiguous", matches
+    return "ok", matches
+
+
+def _username_matches_author(parsed_name: str, author: discord.abc.User) -> bool:
+    """
+    STRICT: parsed_name phải KHỚP CHÍNH XÁC (sau normalize) với một trong các tên
+    định danh của Discord user — bao gồm cả raw và sau khi strip role tag prefix.
+
+    Strip 2 chiều: cả parsed_name VÀ candidate đều thử strip tag trước khi compare.
+    Tag mẫu hỗ trợ (≤15 ký tự trước dấu | hoặc trong [...] / (...) / 【...】):
+      - "TTS | Tên", "BS | Tên", "PK | Tên", "TK | Tên"
+      - "QLBS | Tên", "TKBS | Tên", "VP | Tên", "VT | Tên"
+      - "[EMS] Tên", "(VT) Tên", "【EMS】Tên"
+
+    Không match substring lỏng (đã bỏ ở audit để chống impersonation).
+    """
+    if not parsed_name:
+        return False
+
+    # Tạo set các biến thể của parsed name: raw + stripped
+    parsed_variants: set[str] = set()
+    pn_raw = _normalize_name(parsed_name)
+    if pn_raw:
+        parsed_variants.add(pn_raw)
+    pn_stripped = _normalize_name(_strip_role_tag(parsed_name))
+    if pn_stripped:
+        parsed_variants.add(pn_stripped)
+    if not parsed_variants:
+        return False
+
+    # So sánh với mọi biến thể của candidate
+    for candidate in _identity_candidates(author):
+        cand_n = _normalize_name(candidate)
+        if cand_n and cand_n in parsed_variants:
             return True
     return False
 
@@ -417,12 +542,14 @@ class LogDutyCog(commands.Cog):
         if not parsed:
             return
 
-        # ── Verify STRICT: tên trong LOG DUTY phải khớp với người gửi ──
-        # Không có ngoại lệ cho MOD/ADMIN — mọi người chỉ được tự gửi log của mình.
-        if not _username_matches_author(parsed.username, message.author):
+        # ── Verify STRICT: tên trong LOG DUTY phải DUY NHẤT thuộc về người gửi ──
+        # Iterate toàn bộ guild members → tìm ai khớp với parsed.username.
+        # Chống IMPERSONATION: user không thể đổi nick thành tên người khác để chấm công hộ.
+        status, matches = _resolve_name_owner(message.guild, parsed.username)
+        if status == "none":
             logger.info(
-                f"[auto-scan] Mismatch: parsed='{parsed.username}' "
-                f"vs author='{message.author}' (id={message.author.id})"
+                f"[auto-scan] Tên không thuộc ai: parsed='{parsed.username}' "
+                f"author={message.author} (id={message.author.id})"
             )
             try:
                 await message.add_reaction("🚫")
@@ -431,6 +558,58 @@ class LogDutyCog(commands.Cog):
                     mention_author=False,
                     delete_after=60,
                 )
+            except discord.HTTPException:
+                pass
+            return
+        if status == "ambiguous":
+            logger.warning(
+                f"[auto-scan] Ambiguous name: parsed='{parsed.username}' "
+                f"matches={[m.display_name for m in matches]}"
+            )
+            try:
+                await message.add_reaction("⚠️")
+                await message.reply(
+                    embed=build_log_ambiguous_name_embed(
+                        parsed.username, matches, message.author
+                    ),
+                    mention_author=False,
+                    delete_after=90,
+                )
+            except discord.HTTPException:
+                pass
+            return
+        # status == "ok": có duy nhất 1 người khớp
+        if matches[0].id != message.author.id:
+            logger.warning(
+                f"[auto-scan] IMPERSONATION: author={message.author.id} "
+                f"({message.author.display_name}) cố gắng chấm công cho "
+                f"{matches[0].id} ({matches[0].display_name})"
+            )
+            try:
+                await message.add_reaction("🚫")
+                await message.reply(
+                    embed=build_log_impersonation_embed(
+                        parsed.username, matches[0], message.author
+                    ),
+                    mention_author=False,
+                    delete_after=90,
+                )
+                # Audit log impersonation attempt
+                async with AsyncSessionLocal() as audit_session:
+                    audit_session.add(AuditLog(
+                        guild_id=message.guild.id,
+                        user_id=message.author.id,
+                        username=str(message.author),
+                        action=AuditAction.LOG_REJECTED,
+                        detail={
+                            "reason": "impersonation",
+                            "parsed_name": parsed.username,
+                            "real_owner_id": str(matches[0].id),
+                            "real_owner_name": matches[0].display_name,
+                        },
+                        created_at=utcnow(),
+                    ))
+                    await audit_session.commit()
             except discord.HTTPException:
                 pass
             return
@@ -658,16 +837,44 @@ class LogDutyCog(commands.Cog):
             )
             return
 
-        # ── STRICT: tên trong log phải khớp với người gửi ──
-        # Không có ngoại lệ cho MOD/ADMIN — không ai được upload hộ người khác.
-        if not _username_matches_author(parsed.username, interaction.user):
+        # ── STRICT: tên DUY NHẤT thuộc về người gửi (chống impersonation qua nick) ──
+        status, matches = _resolve_name_owner(interaction.guild, parsed.username)
+        if status == "none":
             await interaction.followup.send(
-                embed=build_error_embed(
-                    f"Tên trong LOG DUTY là **{discord.utils.escape_markdown(parsed.username)}** "
-                    f"nhưng bạn là **{discord.utils.escape_markdown(interaction.user.display_name)}**.\n\n"
-                    "Mỗi người chỉ được upload log của **chính mình**. "
-                    "Nếu cần hỗ trợ vui lòng liên hệ ban lãnh đạo.",
-                    title="🚫 Tên không khớp",
+                embed=build_log_name_mismatch_embed(parsed.username, interaction.user),
+                ephemeral=True,
+            )
+            return
+        if status == "ambiguous":
+            await interaction.followup.send(
+                embed=build_log_ambiguous_name_embed(parsed.username, matches, interaction.user),
+                ephemeral=True,
+            )
+            return
+        if matches[0].id != interaction.user.id:
+            logger.warning(
+                f"[/log upload] IMPERSONATION: user={interaction.user.id} "
+                f"({interaction.user.display_name}) cố gắng chấm công cho "
+                f"{matches[0].id} ({matches[0].display_name})"
+            )
+            async with AsyncSessionLocal() as audit_session:
+                audit_session.add(AuditLog(
+                    guild_id=interaction.guild_id,
+                    user_id=interaction.user.id,
+                    username=str(interaction.user),
+                    action=AuditAction.LOG_REJECTED,
+                    detail={
+                        "reason": "impersonation",
+                        "source": "ocr",
+                        "parsed_name": parsed.username,
+                        "real_owner_id": str(matches[0].id),
+                    },
+                    created_at=utcnow(),
+                ))
+                await audit_session.commit()
+            await interaction.followup.send(
+                embed=build_log_impersonation_embed(
+                    parsed.username, matches[0], interaction.user
                 ),
                 ephemeral=True,
             )
@@ -735,16 +942,44 @@ class LogDutyCog(commands.Cog):
             )
             return
 
-        # ── STRICT: tên trong log phải khớp với người gửi ──
-        # Không có ngoại lệ cho MOD/ADMIN — không ai được forward hộ người khác.
-        if not _username_matches_author(parsed.username, interaction.user):
+        # ── STRICT: tên DUY NHẤT thuộc về người gửi (chống impersonation qua nick) ──
+        status, matches = _resolve_name_owner(interaction.guild, parsed.username)
+        if status == "none":
             await interaction.followup.send(
-                embed=build_error_embed(
-                    f"Tên trong LOG DUTY là **{discord.utils.escape_markdown(parsed.username)}** "
-                    f"nhưng bạn là **{discord.utils.escape_markdown(interaction.user.display_name)}**.\n\n"
-                    "Mỗi người chỉ được forward log của **chính mình**. "
-                    "Nếu cần hỗ trợ vui lòng liên hệ ban lãnh đạo.",
-                    title="🚫 Tên không khớp",
+                embed=build_log_name_mismatch_embed(parsed.username, interaction.user),
+                ephemeral=True,
+            )
+            return
+        if status == "ambiguous":
+            await interaction.followup.send(
+                embed=build_log_ambiguous_name_embed(parsed.username, matches, interaction.user),
+                ephemeral=True,
+            )
+            return
+        if matches[0].id != interaction.user.id:
+            logger.warning(
+                f"[/log forward] IMPERSONATION: user={interaction.user.id} "
+                f"({interaction.user.display_name}) cố gắng chấm công cho "
+                f"{matches[0].id} ({matches[0].display_name})"
+            )
+            async with AsyncSessionLocal() as audit_session:
+                audit_session.add(AuditLog(
+                    guild_id=interaction.guild_id,
+                    user_id=interaction.user.id,
+                    username=str(interaction.user),
+                    action=AuditAction.LOG_REJECTED,
+                    detail={
+                        "reason": "impersonation",
+                        "source": "forward",
+                        "parsed_name": parsed.username,
+                        "real_owner_id": str(matches[0].id),
+                    },
+                    created_at=utcnow(),
+                ))
+                await audit_session.commit()
+            await interaction.followup.send(
+                embed=build_log_impersonation_embed(
+                    parsed.username, matches[0], interaction.user
                 ),
                 ephemeral=True,
             )

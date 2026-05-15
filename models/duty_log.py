@@ -3,7 +3,9 @@ duty_log.py — Bảng chính lưu mỗi ca trực
 Index kép (guild_id, started_at) và (guild_id, user_id) để query thống kê nhanh
 """
 from datetime import datetime
-from sqlalchemy import BigInteger, String, Integer, DateTime, Text, Index, UniqueConstraint
+from sqlalchemy import (
+    BigInteger, String, Integer, DateTime, Text, Index, UniqueConstraint, ForeignKey,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base
 from bot.utils.time_utils import utcnow
@@ -40,6 +42,14 @@ class DutyLog(Base):
     # Người upload/xác nhận (admin có thể nhập thay)
     submitted_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # Auto-link với MemberSchedule khi log khớp với lịch đăng ký
+    # NULL = log "ngoài lịch" (member trực không có trong lịch)
+    schedule_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("member_schedules.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -59,6 +69,8 @@ class DutyLog(Base):
             "guild_id", "user_id", "started_at", "ended_at",
             name="uq_duty_log_entry"
         ),
+        # Index hỗ trợ query compliance: filter logs theo schedule
+        Index("ix_duty_logs_schedule", "schedule_id"),
     )
 
     @property
