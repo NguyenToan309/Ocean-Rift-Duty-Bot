@@ -108,45 +108,99 @@ class TestUsernameMatchesAuthor:
         author = _make_author(display_name="Nguyễn Văn A")
         assert _username_matches_author("nguyễn văn a", author) is True
 
-    # --- Substring match (≥ 4 ký tự) ---
+    # --- STRICT exact match (no substring) ---
+    # Sau audit fix: substring match đã bị loại bỏ vì gây lỗ hổng impersonation
+    # (kẻ tấn công đặt nick "VT | <victim>" sẽ match qua substring).
+    # Giờ chỉ chấp nhận: exact match RAW hoặc exact match SAU KHI strip role tag prefix.
 
-    def test_parsed_contains_display_4chars(self):
-        """parsed_name chứa ≥ 4 ký tự của display_name → True"""
-        # "nguyenvananhtu" chứa "anhtú" (sau normalize)
+    def test_substring_no_longer_matches(self):
+        """parsed_name là substring của display_name → KHÔNG còn match (strict mode)"""
         author = _make_author(display_name="Nguyễn Văn Anh Tú")
-        # parsed là một phần của display_name
-        assert _username_matches_author("Anh Tú", author) is True
+        # "Anh Tú" là substring của "Nguyễn Văn Anh Tú" nhưng không phải tên đầy đủ
+        assert _username_matches_author("Anh Tú", author) is False
 
-    def test_display_contains_parsed_4chars(self):
-        """display_name chứa ≥ 4 ký tự của parsed_name → True"""
+    def test_display_substring_of_parsed_no_longer_matches(self):
+        """display_name là substring của parsed_name → cũng KHÔNG còn match"""
         author = _make_author(display_name="Nguyễn Văn Anh Tú")
-        assert _username_matches_author("Nguyễn Văn Anh Tú Đẹp Trai", author) is True
+        assert _username_matches_author("Nguyễn Văn Anh Tú Đẹp Trai", author) is False
 
     def test_substring_3chars_rejected(self):
-        """Đoạn khớp chỉ 3 ký tự → False (ngăn false positive)"""
-        # "abc" in "abcdef" → nhưng len("abc") = 3 < 4 → không match
+        """3 ký tự chứa trong tên → False (như cũ)"""
         author = _make_author(name="abcdef", display_name="abcdef")
         assert _username_matches_author("abc", author) is False
 
     def test_substring_2chars_rejected(self):
-        """'AB' (2 ký tự) không substring-match 'ABCDEF' dù có chứa"""
-        # parsed_n = "ab", c_n = "abcdef" → len("ab")=2 < 4 → không dùng substring rule
-        # len("abcdef")=6 ≥ 4 nhưng "abcdef" in "ab" → False (chuỗi dài hơn không thể in chuỗi ngắn)
+        """2 ký tự chứa trong tên → False"""
         author = _make_author(name="abcdef", display_name="ABCDEF User")
         assert _username_matches_author("AB", author) is False
 
     def test_substring_1char_rejected(self):
-        """'A' (1 ký tự) không match dù có trong display name"""
-        # parsed_n = "a" → không phải exact match với bất kỳ trường nào
-        # len("a") < 4 → không dùng substring rule
+        """1 ký tự không match"""
         author = _make_author(name="playerone", display_name="Admin Along")
         assert _username_matches_author("A", author) is False
 
-    def test_substring_exactly_4chars_accepted(self):
-        """Đúng 4 ký tự → True"""
-        # parsed = "test", display = "testuser" → "test" in "testuser" AND len("test")=4 → True
+    def test_4char_substring_no_longer_accepted(self):
+        """parsed 'test' là substring của 'testuser' → KHÔNG còn match (strict mode)"""
         author = _make_author(display_name="testuser")
-        assert _username_matches_author("test", author) is True
+        assert _username_matches_author("test", author) is False
+
+    # --- Strip role tag prefix (NEW) ---
+
+    def test_strip_pipe_prefix(self):
+        """Nick 'VT | Tom Nguyễn' → strip → 'Tom Nguyễn' → match parsed 'Tom Nguyễn'"""
+        author = _make_author(display_name="VT | Tom Nguyễn")
+        assert _username_matches_author("Tom Nguyễn", author) is True
+
+    def test_strip_bracket_prefix(self):
+        """Nick '[EMS] Lan Anh' → strip → 'Lan Anh' → match"""
+        author = _make_author(display_name="[EMS] Lan Anh")
+        assert _username_matches_author("Lan Anh", author) is True
+
+    def test_strip_paren_prefix(self):
+        """Nick '(VT) Hùng' → strip → 'Hùng' → match"""
+        author = _make_author(display_name="(VT) Hùng")
+        assert _username_matches_author("Hùng", author) is True
+
+    def test_strip_unicode_bracket_prefix(self):
+        """Nick '【VT】Hùng' → strip → 'Hùng' → match (Unicode brackets)"""
+        author = _make_author(display_name="【VT】Hùng")
+        assert _username_matches_author("Hùng", author) is True
+
+    def test_no_strip_for_partial_substring(self):
+        """Strip chỉ xử lý prefix tag, không strip tên thật → parsed 'Pháp Danh' không match nick 'VT | xPhápDanh'"""
+        author = _make_author(display_name="VT | xPhápDanh")
+        assert _username_matches_author("Pháp Danh", author) is False
+
+    def test_homie_org_role_tags(self):
+        """Tất cả tag role của tổ chức Homie (TTS, BS, PK, TK, QLBS, TKBS, VP, VT) đều được strip"""
+        tags = ["TTS", "BS", "PK", "TK", "QLBS", "TKBS", "VP", "VT"]
+        for tag in tags:
+            author = _make_author(display_name=f"{tag} | Pháp Danh")
+            assert _username_matches_author("Pháp Danh", author) is True, f"tag={tag} không strip được"
+
+    def test_strip_works_both_sides(self):
+        """Cả parsed_name VÀ Discord nick đều có thể có prefix tag — match qua strip 2 chiều"""
+        # Case 1: parsed có prefix, nick không
+        author = _make_author(display_name="Tom Nguyễn")
+        assert _username_matches_author("VT | Tom Nguyễn", author) is True
+        # Case 2: nick có prefix, parsed không
+        author2 = _make_author(display_name="VT | Tom Nguyễn")
+        assert _username_matches_author("Tom Nguyễn", author2) is True
+        # Case 3: cả 2 đều có prefix khác
+        author3 = _make_author(display_name="VT | Tom Nguyễn")
+        assert _username_matches_author("BS | Tom Nguyễn", author3) is True
+
+    def test_impersonation_via_long_substring_blocked(self):
+        """🚫 ATTACK: kẻ tấn công đặt nick 'VT | Pháp Danh Thích Em' để match parsed 'Pháp Danh Thích Em'.
+        Strip prefix 'VT | ' → 'Pháp Danh Thích Em' → ĐÚNG khớp.
+        ⚠️ Trường hợp này VẪN match (không thể phân biệt user thật và kẻ giả mạo qua identity).
+        Phòng thủ phải dựa vào: (a) iterate guild trong _resolve_name_owner, (b) DB lock username trong _save_duty_log.
+        Test này document rằng identity check không đủ một mình.
+        """
+        author = _make_author(display_name="VT | Pháp Danh Thích Em")
+        # match TRUE — vì strip prefix ra "Pháp Danh Thích Em" exact
+        # Đây là expected behavior: identity check chỉ là 1 lớp
+        assert _username_matches_author("Pháp Danh Thích Em", author) is True
 
     # --- No match ---
 

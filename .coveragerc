@@ -1,0 +1,21 @@
+[run]
+branch = True
+source = bot, web, models
+omit =
+    */migrations/*
+    */tests/*
+    */__pycache__/*
+    */.venv/*
+    */conftest.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+precision = 1
+show_missing = True
+skip_empty = True

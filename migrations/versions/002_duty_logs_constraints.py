@@ -23,6 +23,43 @@ def upgrade() -> None:
     # ── duty_logs: xóa index cũ (superseded) ──
     op.drop_index("ix_duty_logs_guild_user_started", table_name="duty_logs")
 
+    # ── DEDUP: dọn dữ liệu trùng trước khi tạo UniqueConstraint ──
+    # Trước migration này, code chỉ check duplicate ở application level
+    # (race condition có thể tạo bản ghi trùng). Cần xoá duplicate trước khi
+    # tạo unique constraint, nếu không sẽ vi phạm và migration fail.
+    #
+    # Strategy: với mỗi nhóm (guild, user, started_at, ended_at) trùng,
+    # giữ lại record có id NHỎ NHẤT (record cũ nhất, đã có audit log),
+    # xoá các record sau (id lớn hơn).
+    conn = op.get_bind()
+    result = conn.execute(sa.text("""
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM duty_logs
+            GROUP BY guild_id, user_id, started_at, ended_at
+            HAVING COUNT(*) > 1
+        ) t
+    """))
+    dup_groups = result.scalar() or 0
+    if dup_groups > 0:
+        # Đếm số record sẽ bị xoá
+        result = conn.execute(sa.text("""
+            SELECT COUNT(*) - COUNT(DISTINCT (guild_id, user_id, started_at, ended_at))
+            FROM duty_logs
+        """))
+        dup_rows = result.scalar() or 0
+        print(f"[migration 002] Phát hiện {dup_groups} nhóm trùng, "
+              f"sẽ xoá {dup_rows} bản ghi duplicate (giữ lại id nhỏ nhất mỗi nhóm)...")
+        conn.execute(sa.text("""
+            DELETE FROM duty_logs a
+            USING duty_logs b
+            WHERE a.id > b.id
+              AND a.guild_id   = b.guild_id
+              AND a.user_id    = b.user_id
+              AND a.started_at = b.started_at
+              AND a.ended_at   = b.ended_at
+        """))
+        print(f"[migration 002] Đã xoá {dup_rows} bản ghi trùng. Tiếp tục tạo constraint...")
+
     # ── duty_logs: unique constraint chống race condition duplicate ──
     op.create_unique_constraint(
         "uq_duty_log_entry",

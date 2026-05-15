@@ -1,0 +1,79 @@
+/* ============================================================
+   ALERTS — inline messages, banners
+   ============================================================ */
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+.alert__icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.alert__title {
+  font-weight: var(--fw-semibold);
+  color: var(--c-text-primary);
+  margin-bottom: 2px;
+}
+
+.alert__body { color: var(--c-text-secondary); }
+
+.alert--info    { background: var(--c-brand-soft);   border-color: var(--c-brand-ring); color: var(--c-text-primary); }
+.alert--success { background: var(--c-success-soft); border-color: var(--c-success);    color: var(--c-success-text); }
+.alert--warning { background: var(--c-warning-soft); border-color: var(--c-warning);    color: var(--c-warning-text); }
+.alert--danger  { background: var(--c-danger-soft);  border-color: var(--c-danger);     color: var(--c-danger-text); }
+
+/* ============================================================
+   TOAST — transient notifications (top-right)
+   ============================================================ */
+.toast-root {
+  position: fixed;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  pointer-events: none;
+  max-width: 360px;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-lg);
+  font-size: var(--fs-sm);
+  color: var(--c-text-primary);
+  animation: toast-in var(--dur-base) var(--ease-spring);
+}
+
+.toast--success { border-left: 3px solid var(--c-success); }
+.toast--warning { border-left: 3px solid var(--c-warning); }
+.toast--danger  { border-left: 3px solid var(--c-danger); }
+.toast--info    { border-left: 3px solid var(--c-brand); }
+
+.toast--exit { animation: toast-out var(--dur-base) var(--ease-snappy) forwards; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px) scale(0.96); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes toast-out {
+  to { opacity: 0; transform: translateX(20px) scale(0.96); }
+}

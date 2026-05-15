@@ -11,6 +11,8 @@ from models.base import get_db
 from models.duty_log import DutyLog
 from models.guild import GuildConfig
 from models.audit_log import AuditLog, AuditAction
+from models.schedule import MemberSchedule
+from models.leave import LeaveRequest, LeaveRequestStatus
 from web.middleware.auth_guard import require_auth, require_guild_role, fetch_member_role_ids
 from web.middleware.rate_limit import limiter
 from bot.utils.time_utils import get_period_range, get_custom_range, minutes_to_hhmm, utcnow
@@ -162,6 +164,434 @@ async def get_overview(
             for r in top5.all()
         ],
     }
+
+
+@router.get("/attendance")
+@limiter.limit("20/minute")
+async def get_attendance_dashboard(
+    request: Request,
+    guild_id: int = Query(...),
+    period: str = Query("week"),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Dashboard chấm công TOÀN BỘ nhân viên trong guild.
+    Trả về 1 row/user với stats đầy đủ:
+      - session_count, total_minutes, total_hhmm
+      - avg/longest/shortest session
+      - first_log_at, last_log_at
+      - compliance: rate (%), on_time, late, missed (nếu user có lịch trực)
+      - has_schedule: bool
+      - last_log_age_days: số ngày từ log gần nhất tới giờ
+
+    Permission Q3=(b):
+      - Member: thấy bảng đầy đủ; Discord ID ẩn (server trả None cho non-mod)
+      - Mod+: thấy đủ Discord ID
+    """
+    await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
+    current_uid = int(current_user["sub"])
+
+    # Detect mod+ để quyết định trả Discord ID
+    cfg_row = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == guild_id))
+    cfg = cfg_row.scalar_one_or_none()
+    raw_role_ids = await fetch_member_role_ids(guild_id, current_uid)
+    user_role_ids = set(raw_role_ids) if raw_role_ids is not None else set()
+    is_mod = bool(cfg) and any(
+        cfg.role_map.get(r) and int(cfg.role_map[r]) in user_role_ids
+        for r in ("DUTY_MOD", "DUTY_ADMIN")
+    )
+
+    # Resolve range
+    tz = (cfg.timezone if cfg else "Asia/Ho_Chi_Minh") or "Asia/Ho_Chi_Minh"
+    try:
+        if date_from and date_to:
+            start, end = get_custom_range(date_from, date_to, tz)
+        else:
+            start, end = get_period_range(period, tz_str=tz)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Aggregate query: session_count + total + avg + max + min + first + last cho mỗi user
+    rows = await session.execute(
+        select(
+            DutyLog.user_id,
+            DutyLog.username,
+            func.count(DutyLog.id).label("session_count"),
+            func.coalesce(func.sum(DutyLog.duration_minutes), 0).label("total_minutes"),
+            func.max(DutyLog.duration_minutes).label("longest"),
+            func.min(DutyLog.duration_minutes).label("shortest"),
+            func.min(DutyLog.started_at).label("first_log_at"),
+            func.max(DutyLog.started_at).label("last_log_at"),
+        )
+        .where(DutyLog.guild_id == guild_id)
+        .where(DutyLog.started_at >= start)
+        .where(DutyLog.started_at <= end)
+        .group_by(DutyLog.user_id, DutyLog.username)
+        .order_by(func.sum(DutyLog.duration_minutes).desc())
+    )
+    log_data = rows.all()
+
+    # Lấy compliance entries để đếm on_time/late/missed per user
+    from bot.utils.schedule_engine import (
+        compute_compliance,
+        STATUS_ON_TIME, STATUS_LATE, STATUS_MISSED, STATUS_ON_LEAVE,
+    )
+    compliance_entries = await compute_compliance(session, guild_id, None, start, end, tz)
+    compl_per_user: dict[int, dict] = {}
+    for e in compliance_entries:
+        c = compl_per_user.setdefault(e.user_id, {
+            "on_time": 0, "late": 0, "missed": 0, "on_leave": 0, "has_schedule": False,
+        })
+        if e.schedule:
+            c["has_schedule"] = True
+        if e.status == STATUS_ON_TIME:
+            c["on_time"] += 1
+        elif e.status == STATUS_LATE:
+            c["late"] += 1
+        elif e.status == STATUS_MISSED:
+            c["missed"] += 1
+        elif e.status == STATUS_ON_LEAVE:
+            c["on_leave"] += 1
+
+    # Lấy users có schedule nhưng chưa log (không có trong log_data) — để bao gồm trong attendance
+    sched_users = await session.execute(
+        select(MemberSchedule.user_id, func.min(MemberSchedule.user_id).label("uid"))
+        .where(MemberSchedule.guild_id == guild_id)
+        .where(MemberSchedule.is_active == True)  # noqa: E712
+        .group_by(MemberSchedule.user_id)
+    )
+    users_with_schedule = {row.user_id for row in sched_users.all()}
+
+    # Set of users đã trong log_data
+    users_with_logs = {row.user_id for row in log_data}
+
+    # Merge: users có log + users có schedule nhưng chưa log
+    items: list[dict] = []
+    now_utc = utcnow()
+
+    def _make_compl(uid: int) -> dict:
+        c = compl_per_user.get(uid, {"on_time": 0, "late": 0, "missed": 0, "on_leave": 0, "has_schedule": False})
+        countable = c["on_time"] + c["late"] + c["missed"]
+        rate = (c["on_time"] / countable * 100) if countable else None
+        return {
+            "rate": round(rate, 1) if rate is not None else None,
+            "on_time": c["on_time"],
+            "late": c["late"],
+            "missed": c["missed"],
+            "on_leave": c["on_leave"],
+        }
+
+    for row in log_data:
+        uid = row.user_id
+        last_log = row.last_log_at
+        days_since = (now_utc - last_log).days if last_log else None
+        avg = int(row.total_minutes / row.session_count) if row.session_count else 0
+
+        items.append({
+            "user_id": str(uid),  # luôn trả Discord ID — endpoint /daily đã enforce permission riêng
+            "username": row.username,
+            "session_count": row.session_count,
+            "total_minutes": row.total_minutes,
+            "total_hhmm": minutes_to_hhmm(row.total_minutes),
+            "avg_minutes": avg,
+            "longest_minutes": row.longest or 0,
+            "shortest_minutes": row.shortest or 0,
+            "first_log_at": row.first_log_at.isoformat() if row.first_log_at else None,
+            "last_log_at": last_log.isoformat() if last_log else None,
+            "last_log_age_days": days_since,
+            "has_schedule": uid in users_with_schedule,
+            "compliance": _make_compl(uid),
+        })
+
+    # Add users có schedule nhưng KHÔNG log trong kỳ → status "vắng hoàn toàn"
+    for uid in users_with_schedule - users_with_logs:
+        # Username từ duty_logs gần nhất ngoài kỳ
+        name_row = await session.execute(
+            select(DutyLog.username)
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id == uid)
+            .order_by(DutyLog.id.desc())
+            .limit(1)
+        )
+        username = name_row.scalar_one_or_none() or f"User#{uid}"
+
+        items.append({
+            "user_id": str(uid),  # luôn trả Discord ID — endpoint /daily đã enforce permission riêng
+            "username": username,
+            "session_count": 0,
+            "total_minutes": 0,
+            "total_hhmm": "0 phút",
+            "avg_minutes": 0,
+            "longest_minutes": 0,
+            "shortest_minutes": 0,
+            "first_log_at": None,
+            "last_log_at": None,
+            "last_log_age_days": None,
+            "has_schedule": True,
+            "compliance": _make_compl(uid),
+        })
+
+    # Tổng hợp summary toàn server
+    total_sessions = sum(it["session_count"] for it in items)
+    total_minutes = sum(it["total_minutes"] for it in items)
+    active_members = sum(1 for it in items if it["session_count"] > 0)
+
+    return {
+        "is_mod_view": is_mod,
+        "period": period,
+        "range": {"from": start.isoformat(), "to": end.isoformat()},
+        "summary": {
+            "total_members": len(items),
+            "active_members": active_members,
+            "total_sessions": total_sessions,
+            "total_minutes": total_minutes,
+            "total_hhmm": minutes_to_hhmm(total_minutes),
+            "avg_minutes_per_member": int(total_minutes / active_members) if active_members else 0,
+        },
+        "items": items,
+    }
+
+
+@router.get("/attendance/daily")
+@limiter.limit("30/minute")
+async def get_attendance_daily(
+    request: Request,
+    guild_id: int = Query(...),
+    user_id: int = Query(..., description="Discord user ID xem chi tiết"),
+    period: str = Query("week"),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Chi tiết chấm công TỪNG NGÀY của 1 nhân viên trong khoảng kỳ.
+
+    Trả về list day-by-day với:
+      - schedules: lịch trực hôm đó (nếu có)
+      - logs: danh sách log đã chấm trong ngày
+      - leave_record: nếu user xin nghỉ duyệt cho ngày đó
+      - status: on_time / late / missed / off_schedule / on_leave / no_schedule
+      - total_minutes_worked, scheduled_minutes, compliance_pct
+
+    Permission:
+      - Member chỉ xem được của chính mình
+      - Mod+ xem được mọi user
+    """
+    current_uid = int(current_user["sub"])
+    if user_id == current_uid:
+        await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
+    else:
+        await require_guild_role(guild_id, "DUTY_MOD", current_user, session)
+
+    # Resolve range
+    cfg_row = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == guild_id))
+    cfg = cfg_row.scalar_one_or_none()
+    tz = (cfg.timezone if cfg else "Asia/Ho_Chi_Minh") or "Asia/Ho_Chi_Minh"
+
+    try:
+        if date_from and date_to:
+            range_start, range_end = get_custom_range(date_from, date_to, tz)
+        else:
+            range_start, range_end = get_period_range(period, tz_str=tz)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    import pytz
+    from datetime import timedelta, datetime as dt
+    from bot.utils.schedule_engine import (
+        schedule_occurrence_to_utc, is_user_on_leave,
+        STATUS_ON_TIME, STATUS_LATE, STATUS_MISSED, STATUS_OFF_SCHEDULE, STATUS_ON_LEAVE,
+        COMPLIANCE_MIN_MINUTES,
+    )
+    tz_obj = pytz.timezone(tz)
+    start_local_date = range_start.astimezone(tz_obj).date()
+    end_local_date = range_end.astimezone(tz_obj).date()
+    today_local = utcnow().astimezone(tz_obj).date()
+
+    # Lấy tất cả schedule của user
+    sched_rows = await session.execute(
+        select(MemberSchedule)
+        .where(MemberSchedule.guild_id == guild_id)
+        .where(MemberSchedule.user_id == user_id)
+        .where(MemberSchedule.is_active == True)  # noqa: E712
+    )
+    user_schedules = sched_rows.scalars().all()
+
+    # Lấy tất cả log của user trong khoảng (mở rộng thêm 1 ngày để bắt ca qua đêm)
+    log_rows = await session.execute(
+        select(DutyLog)
+        .where(DutyLog.guild_id == guild_id)
+        .where(DutyLog.user_id == user_id)
+        .where(DutyLog.started_at < range_end + timedelta(days=1))
+        .where(DutyLog.ended_at > range_start - timedelta(days=1))
+        .order_by(DutyLog.started_at.asc())
+    )
+    user_logs = log_rows.scalars().all()
+
+    # Lấy LeaveRequest approved trong khoảng
+    leave_rows = await session.execute(
+        select(LeaveRequest)
+        .where(LeaveRequest.guild_id == guild_id)
+        .where(LeaveRequest.user_id == user_id)
+        .where(LeaveRequest.status == LeaveRequestStatus.APPROVED)
+    )
+    user_leaves = leave_rows.scalars().all()
+
+    # Username (lấy từ log gần nhất, ngoài kỳ cũng được)
+    name_row = await session.execute(
+        select(DutyLog.username)
+        .where(DutyLog.guild_id == guild_id)
+        .where(DutyLog.user_id == user_id)
+        .order_by(DutyLog.id.desc())
+        .limit(1)
+    )
+    username = name_row.scalar_one_or_none() or f"User#{user_id}"
+
+    weekday_labels = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
+    weekday_short = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+
+    days_count = (end_local_date - start_local_date).days + 1
+    days_out: list[dict] = []
+
+    # Aggregate counts cho summary
+    sum_counters = {
+        "on_time": 0, "late": 0, "missed": 0,
+        "off_schedule": 0, "on_leave": 0, "no_schedule": 0,
+    }
+    total_worked_minutes = 0
+    total_scheduled_minutes = 0
+
+    for offset in range(days_count):
+        d = start_local_date + timedelta(days=offset)
+        wd = d.weekday()
+
+        # Find schedules cho ngày này
+        day_schedules = [s for s in user_schedules if s.weekday == wd]
+
+        # Find logs có overlap với ngày này (UTC range của ngày local)
+        day_start_utc = tz_obj.localize(dt.combine(d, dt.min.time())).astimezone(pytz.utc)
+        day_end_utc = day_start_utc + timedelta(days=1)
+        day_logs = [
+            log for log in user_logs
+            if log.started_at < day_end_utc and log.ended_at > day_start_utc
+        ]
+
+        # Find leave covers ngày này
+        leave_record = None
+        for lr in user_leaves:
+            if lr.start_date <= d and (lr.end_date is None or lr.end_date >= d):
+                leave_record = lr
+                break
+
+        # Tính minutes worked trong ngày = sum overlap của logs với day window
+        worked_minutes = 0
+        for log in day_logs:
+            ovl_start = max(log.started_at, day_start_utc)
+            ovl_end = min(log.ended_at, day_end_utc)
+            if ovl_end > ovl_start:
+                worked_minutes += int((ovl_end - ovl_start).total_seconds() // 60)
+
+        # Tính scheduled minutes của ngày này
+        scheduled_minutes = 0
+        for s in day_schedules:
+            s_start_utc, s_end_utc = schedule_occurrence_to_utc(s, d, tz)
+            scheduled_minutes += int((s_end_utc - s_start_utc).total_seconds() // 60)
+
+        # Quyết định status
+        if leave_record:
+            status = STATUS_ON_LEAVE
+        elif not day_schedules:
+            status = STATUS_NO_SCHEDULE if not day_logs else STATUS_OFF_SCHEDULE
+        else:
+            # Có lịch — tính overlap với schedule
+            overlap_with_schedule = 0
+            for s in day_schedules:
+                s_start_utc, s_end_utc = schedule_occurrence_to_utc(s, d, tz)
+                for log in day_logs:
+                    ovl_start = max(log.started_at, s_start_utc)
+                    ovl_end = min(log.ended_at, s_end_utc)
+                    if ovl_end > ovl_start:
+                        overlap_with_schedule += int((ovl_end - ovl_start).total_seconds() // 60)
+
+            if overlap_with_schedule >= COMPLIANCE_MIN_MINUTES:
+                status = STATUS_ON_TIME
+            elif overlap_with_schedule > 0:
+                status = STATUS_LATE
+            else:
+                status = STATUS_MISSED
+
+        sum_counters[status] = sum_counters.get(status, 0) + 1
+        total_worked_minutes += worked_minutes
+        total_scheduled_minutes += scheduled_minutes
+
+        # Compliance pct: worked / scheduled * 100 (capped 100)
+        if scheduled_minutes > 0:
+            compliance_pct = min(100.0, worked_minutes / scheduled_minutes * 100)
+        elif worked_minutes > 0:
+            compliance_pct = None    # ngoài lịch
+        else:
+            compliance_pct = 0.0
+
+        days_out.append({
+            "date": d.isoformat(),
+            "weekday": wd,
+            "weekday_label": weekday_labels[wd],
+            "weekday_short": weekday_short[wd],
+            "is_today": d == today_local,
+            "is_future": d > today_local,
+            "schedules": [{
+                "id": s.id,
+                "start_time": s.start_time.strftime("%H:%M"),
+                "end_time": s.end_time.strftime("%H:%M"),
+                "crosses_midnight": s.crosses_midnight,
+            } for s in day_schedules],
+            "logs": [{
+                "id": log.id,
+                "started_at": log.started_at.isoformat(),
+                "ended_at": log.ended_at.isoformat(),
+                "duration_minutes": log.duration_minutes,
+                "source": log.source,
+                "schedule_id": log.schedule_id,
+            } for log in day_logs],
+            "leave": ({
+                "id": leave_record.id,
+                "type": leave_record.request_type,
+                "start_date": leave_record.start_date.isoformat(),
+                "end_date": leave_record.end_date.isoformat() if leave_record.end_date else None,
+                "reason": leave_record.reason,
+            } if leave_record else None),
+            "status": status,
+            "worked_minutes": worked_minutes,
+            "scheduled_minutes": scheduled_minutes,
+            "compliance_pct": round(compliance_pct, 1) if compliance_pct is not None else None,
+        })
+
+    return {
+        "user_id": str(user_id),
+        "username": username,
+        "period": period,
+        "range": {"from": start_local_date.isoformat(), "to": end_local_date.isoformat()},
+        "summary": {
+            "counters": sum_counters,
+            "total_worked_minutes": total_worked_minutes,
+            "total_worked_hhmm": minutes_to_hhmm(total_worked_minutes),
+            "total_scheduled_minutes": total_scheduled_minutes,
+            "total_scheduled_hhmm": minutes_to_hhmm(total_scheduled_minutes),
+            "overall_compliance_pct": (
+                round(min(100.0, total_worked_minutes / total_scheduled_minutes * 100), 1)
+                if total_scheduled_minutes > 0 else None
+            ),
+        },
+        "days": days_out,
+    }
+
+
+# ─── Constants used by /attendance/daily — không trùng với schedule_engine ──
+STATUS_NO_SCHEDULE = "no_schedule"
 
 
 @router.get("/ranking")

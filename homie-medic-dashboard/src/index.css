@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  :root {
+    --color-bg-base: #f8fafc;
+    --color-bg-surface: #ffffff;
+    --color-border: #e2e8f0;
+    --color-brand: #3b82f6;
+    --color-brand-muted: #dbeafe;
+    --color-accent: #8b5cf6;
+    --color-success: #10b981;
+    --color-warning: #f59e0b;
+    --color-danger: #ef4444;
+    --color-text-main: #0f172a;
+    --color-text-secondary: #64748b;
+  }
+
+  .dark {
+    --color-bg-base: #020617;
+    --color-bg-surface: #0f172a;
+    --color-border: #1e293b;
+    --color-brand: #3b82f6;
+    --color-brand-muted: #1e293b;
+    --color-accent: #8b5cf6;
+    --color-success: #10b981;
+    --color-warning: #f59e0b;
+    --color-danger: #ef4444;
+    --color-text-main: #f8fafc;
+    --color-text-secondary: #94a3b8;
+  }
+
+  body {
+    @apply bg-[var(--color-bg-base)] text-[var(--color-text-main)] font-sans antialiased;
+  }
+}
+
+@layer components {
+  .stat-card {
+    @apply p-5 rounded-xl bg-[var(--color-bg-surface)] border border-[var(--color-border)] shadow-sm transition-all duration-300 hover:shadow-md hover:border-slate-700/50;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2 bg-[var(--color-brand)] text-white rounded-lg font-medium transition-all hover:brightness-110 active:scale-[0.98] focus:ring-2 focus:ring-[var(--color-brand)] focus:ring-offset-2 ring-offset-slate-950;
+  }
+
+  .status-badge {
+    @apply px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5;
+  }
+
+  .pulse-dot {
+    @apply w-1.5 h-1.5 rounded-full bg-current animate-pulse;
+  }
+}

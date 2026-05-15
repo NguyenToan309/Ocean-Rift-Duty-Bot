@@ -22,6 +22,27 @@ class GuildConfig(Base):
     # Channel ID được phép gửi log (None = cho phép tất cả channel)
     log_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
+    # Channels cho lịch trực + xin nghỉ (cấu hình qua /setup channel-...)
+    schedule_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)   # nơi /dangky
+    remind_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)     # nơi tag nhắc trực
+    leave_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)      # nơi /xinnghi
+    staff_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)      # staff quản lý
+
+    # Discord role ID của Medic (để onboarding scan ai chưa đăng ký lịch)
+    medic_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # Default mốc nhắc trước ca (phút) — JSON list, vd [60, 30, 5]
+    # Member có thể override qua MemberSchedule.custom_remind_offsets
+    default_remind_offsets: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=lambda: [60, 30, 5]
+    )
+
+    # Danh sách role ID bị gỡ tự động khi /xinoutnganh được duyệt hoặc /sathai
+    # Lưu list[str] để tránh mất chính xác snowflake 64-bit khi serialize JSON
+    cleanup_role_ids: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+
     # Map role: {"DUTY_ADMIN": role_id, "DUTY_MOD": role_id, "DUTY_MEMBER": role_id}
     # Lưu dạng JSON vì số lượng role có thể thay đổi
     role_map: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
