@@ -35,6 +35,7 @@ COGS = [
     "bot.cogs.leave",
     "bot.cogs.discipline",
     "bot.cogs.control_panel",
+    "bot.cogs.staff",
 ]
 
 
@@ -78,9 +79,32 @@ class DutyBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Lỗi load cog {cog}: {e}", exc_info=True)
 
-        # Sync slash commands toàn cầu (discord.py 2.x)
-        synced = await self.tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands")
+        # Sync slash commands.
+        # Discord global sync mất tới 1h propagate → chậm khi dev.
+        # Nếu env DISCORD_DEV_GUILD_ID hoặc DISCORD_TEST_GUILD_ID set →
+        # copy global commands sang guild đó + sync ngay (instant, hiện liền).
+        # Production: bỏ env này, dùng global sync.
+        dev_guild_id = os.getenv("DISCORD_DEV_GUILD_ID") or os.getenv("DISCORD_TEST_GUILD_ID")
+        if dev_guild_id and dev_guild_id.isdigit():
+            guild_obj = discord.Object(id=int(dev_guild_id))
+            self.tree.copy_global_to(guild=guild_obj)
+            try:
+                synced = await self.tree.sync(guild=guild_obj)
+                logger.info(
+                    f"[dev-mode] Synced {len(synced)} slash commands "
+                    f"to guild {dev_guild_id} (instant)."
+                )
+            except Exception as e:
+                logger.error(f"Sync per-guild failed: {e}", exc_info=True)
+        else:
+            try:
+                synced = await self.tree.sync()
+                logger.info(
+                    f"Synced {len(synced)} slash commands globally. "
+                    "Lưu ý: global sync có thể mất tới 1 giờ để Discord propagate."
+                )
+            except Exception as e:
+                logger.error(f"Global sync failed: {e}", exc_info=True)
 
         # Khởi động background tasks (nhắc trực, EOD check, onboarding scan)
         from bot.tasks.schedule_tasks import start_background_tasks

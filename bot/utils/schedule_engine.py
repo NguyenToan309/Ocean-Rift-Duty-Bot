@@ -225,9 +225,13 @@ async def is_user_on_leave(
     user_id: int,
     check_date: date,
 ) -> bool:
-    """User có xin nghỉ đã được duyệt cho ngày check_date không?"""
+    """User có xin nghỉ đã được duyệt cho ngày check_date không?
+
+    NOTE: User có thể có NHIỀU đơn approved overlap (VD nghỉ phép + nghỉ ốm
+    cùng ngày, hoặc đơn cũ + đơn revert+resubmit). Dùng .first() tránh crash.
+    """
     rows = await session.execute(
-        select(LeaveRequest)
+        select(LeaveRequest.id)
         .where(LeaveRequest.guild_id == guild_id)
         .where(LeaveRequest.user_id == user_id)
         .where(LeaveRequest.status == LeaveRequestStatus.APPROVED)
@@ -236,8 +240,9 @@ async def is_user_on_leave(
             LeaveRequest.end_date == None,  # noqa: E711 — RESIGN không có end_date
             LeaveRequest.end_date >= check_date,
         ))
+        .limit(1)
     )
-    return rows.scalar_one_or_none() is not None
+    return rows.first() is not None
 
 
 async def compute_compliance(

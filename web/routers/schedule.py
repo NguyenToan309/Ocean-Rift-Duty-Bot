@@ -55,6 +55,228 @@ def _serialize_schedule(s: MemberSchedule) -> dict:
     }
 
 
+# ─── POST / (Admin tạo ca trực từ web) ────────────────────────────────────────
+
+@router.post("")
+@limiter.limit("20/minute")
+async def create_schedule(
+    request: Request,
+    guild_id: int = Query(...),
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Admin tạo ca trực mới cho 1 user. Body:
+      {
+        "user_id": "1119880453671899196",
+        "weekday": 0,         # 0=T2 .. 6=CN
+        "start_time": "08:00",
+        "end_time": "12:00",
+        "note": "Tạo ca trực mới"   # bắt buộc ≥3 chars
+      }
+    """
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+
+    note = (body.get("note") or "").strip()
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Bắt buộc lý do tạo ca (≥3 ký tự).")
+
+    try:
+        user_id = int(body.get("user_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="user_id phải là số nguyên (Discord ID).")
+
+    weekday = body.get("weekday")
+    if not isinstance(weekday, int) or not 0 <= weekday <= 6:
+        raise HTTPException(status_code=400, detail="weekday phải là 0-6 (0=Thứ 2 ... 6=Chủ nhật).")
+
+    try:
+        sh, sm = map(int, str(body.get("start_time", "")).split(":"))
+        eh, em = map(int, str(body.get("end_time", "")).split(":"))
+        start_t = time(sh, sm)
+        end_t = time(eh, em)
+    except Exception:
+        raise HTTPException(status_code=400, detail="start_time/end_time phải dạng HH:MM (24h).")
+
+    crosses_midnight = start_t >= end_t
+
+    new_sched = MemberSchedule(
+        guild_id=guild_id,
+        user_id=user_id,
+        weekday=weekday,
+        start_time=start_t,
+        end_time=end_t,
+        crosses_midnight=crosses_midnight,
+        is_active=True,
+    )
+    session.add(new_sched)
+    await session.flush()
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=int(current_user["sub"]),
+        username=current_user.get("username", f"user_{current_user['sub']}"),
+        action=AuditAction.SCHEDULE_CREATED,
+        detail={
+            "schedule_id": new_sched.id,
+            "for_user": str(user_id),
+            "weekday": weekday,
+            "start": start_t.strftime("%H:%M"),
+            "end": end_t.strftime("%H:%M"),
+            "note": note,
+            "via": "web",
+        },
+        created_at=utcnow(),
+    ))
+    await session.commit()
+    await session.refresh(new_sched)
+
+    # Realtime broadcast
+    try:
+        from web.realtime import broadcaster
+        await broadcaster.publish(guild_id, {"type": "schedule_updated"})
+    except Exception:
+        pass
+
+    return {"success": True, "schedule": _serialize_schedule(new_sched)}
+
+
+# ─── POST /bulk-replace (Admin set toàn bộ lịch của 1 user cho 1 khung giờ) ───
+
+@router.post("/bulk-replace")
+@limiter.limit("10/minute")
+async def bulk_replace_schedule(
+    request: Request,
+    guild_id: int = Query(...),
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Admin set lại toàn bộ lịch của 1 user cho 1 KHUNG GIỜ cụ thể.
+    REPLACE semantics: ngày KHÔNG có trong `weekdays` sẽ bị DEACTIVATE.
+    Các khung giờ KHÁC của user KHÔNG bị động đến.
+
+    Body:
+      {
+        "user_id": "1119880453671899196",
+        "weekdays": [0, 2, 3, 4, 5, 6],   # 0=T2 .. 6=CN
+        "start_time": "20:50",
+        "end_time": "23:15",
+        "note": "Sửa lịch trực"           # bắt buộc ≥3 chars
+      }
+    """
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+
+    note = (body.get("note") or "").strip()
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Bắt buộc lý do (≥3 ký tự).")
+
+    try:
+        user_id = int(body.get("user_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="user_id phải là số nguyên (Discord ID).")
+
+    weekdays_raw = body.get("weekdays")
+    if not isinstance(weekdays_raw, list) or not weekdays_raw:
+        raise HTTPException(status_code=400, detail="weekdays phải là list số 0-6 không rỗng.")
+    weekdays = set()
+    for w in weekdays_raw:
+        try:
+            wi = int(w)
+            if 0 <= wi <= 6:
+                weekdays.add(wi)
+        except (TypeError, ValueError):
+            continue
+    if not weekdays:
+        raise HTTPException(status_code=400, detail="Không có weekday hợp lệ.")
+
+    try:
+        sh, sm = map(int, str(body.get("start_time", "")).split(":"))
+        eh, em = map(int, str(body.get("end_time", "")).split(":"))
+        start_t = time(sh, sm)
+        end_t = time(eh, em)
+    except Exception:
+        raise HTTPException(status_code=400, detail="start_time/end_time phải dạng HH:MM.")
+
+    crosses_midnight = start_t >= end_t
+
+    # Lấy tất cả entry active có CÙNG start_time
+    rows = await session.execute(
+        select(MemberSchedule)
+        .where(MemberSchedule.guild_id == guild_id)
+        .where(MemberSchedule.user_id == user_id)
+        .where(MemberSchedule.start_time == start_t)
+        .where(MemberSchedule.is_active == True)  # noqa: E712
+    )
+    existing_map = {s.weekday: s for s in rows.scalars().all()}
+
+    created: list[int] = []
+    updated: list[int] = []
+    removed: list[int] = []
+
+    for wd in weekdays:
+        if wd in existing_map:
+            s = existing_map[wd]
+            s.end_time = end_t
+            s.crosses_midnight = crosses_midnight
+            s.is_active = True
+            s.updated_at = utcnow()
+            updated.append(wd)
+        else:
+            new_s = MemberSchedule(
+                guild_id=guild_id,
+                user_id=user_id,
+                weekday=wd,
+                start_time=start_t,
+                end_time=end_t,
+                crosses_midnight=crosses_midnight,
+                is_active=True,
+            )
+            session.add(new_s)
+            created.append(wd)
+
+    for wd, s in existing_map.items():
+        if wd not in weekdays:
+            s.is_active = False
+            s.updated_at = utcnow()
+            removed.append(wd)
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=int(current_user["sub"]),
+        username=current_user.get("username", f"user_{current_user['sub']}"),
+        action=AuditAction.SCHEDULE_UPDATED,
+        detail={
+            "for_user": str(user_id),
+            "start": start_t.strftime("%H:%M"),
+            "end": end_t.strftime("%H:%M"),
+            "crosses_midnight": crosses_midnight,
+            "created_weekdays": sorted(created),
+            "updated_weekdays": sorted(updated),
+            "removed_weekdays": sorted(removed),
+            "note": note,
+            "via": "web",
+        },
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    try:
+        from web.realtime import broadcaster
+        await broadcaster.publish(guild_id, {"type": "schedule_updated"})
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "created": sorted(created),
+        "updated": sorted(updated),
+        "removed": sorted(removed),
+    }
+
+
 # ─── /my ──────────────────────────────────────────────────────────────────────
 
 @router.get("/my")
@@ -213,6 +435,17 @@ async def get_schedule_grid(
 
     # Sort theo username asc
     items.sort(key=lambda x: x["username"].lower())
+
+    # Batch resolve avatars cho schedule grid
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _grid_uids = {int(it["user_id"]) for it in items if it.get("user_id")}
+    _grid_info = await batch_resolve_user_info(_grid_uids) if _grid_uids else {}
+    for it in items:
+        try:
+            uid_int = int(it["user_id"])
+            it["avatar_url"] = (_grid_info.get(uid_int) or {}).get("avatar_url")
+        except (TypeError, ValueError):
+            it["avatar_url"] = None
 
     return {
         "is_mod_view": is_mod,
@@ -470,9 +703,16 @@ async def update_schedule(
     current_user: dict = Depends(require_auth),
 ):
     """
-    Member sửa lịch của mình (Q4=d).
-    Body: {"start_time": "HH:MM", "end_time": "HH:MM", "weekday": int 0-6}
+    Sửa lịch trực.
+    Body: {"start_time": "HH:MM", "end_time": "HH:MM", "weekday": int 0-6, "role_name": str}
+
+    Quyền:
+      - DUTY_MEMBER: chỉ sửa được lịch của CHÍNH MÌNH
+      - DUTY_MOD:    giữ nguyên quy tắc — chỉ sửa được lịch của chính mình (xoá thì
+                     được, qua DELETE endpoint)
+      - DUTY_ADMIN:  có quyền cao nhất — sửa được lịch của BẤT KỲ ai
     """
+    from web.middleware.auth_guard import has_guild_role
     user_id = int(current_user["sub"])
     await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
 
@@ -484,10 +724,31 @@ async def update_schedule(
     sched = row.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Lịch không tồn tại")
-    if sched.user_id != user_id:
-        # Mod+ không sửa được lịch người khác qua web (chỉ owner sửa)
-        # — Mod+ có thể XOÁ qua DELETE endpoint thôi
-        raise HTTPException(status_code=403, detail="Chỉ chủ lịch mới sửa được. Mod chỉ có quyền xoá.")
+
+    is_owner = sched.user_id == user_id
+    is_admin = False
+    note = (body.get("note") or "").strip() or None
+    if not is_owner:
+        # Chỉ DUTY_ADMIN được bypass ownership. MOD vẫn không sửa được lịch người khác.
+        is_admin = await has_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+        if not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Chỉ chủ lịch mới sửa được. Mod có thể xoá qua DELETE — chỉ Admin mới sửa lịch người khác.",
+            )
+    # Audit policy nghiêm ngặt: MỌI thay đổi đều cần lý do (kể cả tự sửa)
+    if not note:
+        raise HTTPException(
+            status_code=400,
+            detail="Mọi thay đổi lịch trực đều phải ghi LÝ DO (field 'note').",
+        )
+
+    # Snapshot trước khi sửa — để audit có before vs after
+    before_snapshot = {
+        "weekday": sched.weekday,
+        "start": sched.start_time.strftime("%H:%M"),
+        "end": sched.end_time.strftime("%H:%M"),
+    }
 
     # Parse body
     try:
@@ -513,18 +774,35 @@ async def update_schedule(
     sched.crosses_midnight = sched.end_time <= sched.start_time
     sched.updated_at = utcnow()
 
+    after_snapshot = {
+        "weekday": sched.weekday,
+        "start": sched.start_time.strftime("%H:%M"),
+        "end": sched.end_time.strftime("%H:%M"),
+    }
+    # Chỉ ghi field nào thực sự đổi
+    changes: dict[str, dict] = {}
+    for k in ("weekday", "start", "end"):
+        if before_snapshot[k] != after_snapshot[k]:
+            changes[k] = {"before": before_snapshot[k], "after": after_snapshot[k]}
+
+    audit_detail: dict = {
+        "schedule_id": schedule_id,
+        "for_user": str(sched.user_id),
+        "via": "web",
+        "by_role": "ADMIN" if (not is_owner and is_admin) else "OWNER",
+        **after_snapshot,
+    }
+    if changes:
+        audit_detail["changes"] = changes
+    if note:
+        audit_detail["note"] = note
+
     session.add(AuditLog(
         guild_id=guild_id,
         user_id=user_id,
         username=current_user.get("username", f"user_{user_id}"),
         action=AuditAction.SCHEDULE_UPDATED,
-        detail={
-            "schedule_id": schedule_id,
-            "via": "web",
-            "weekday": sched.weekday,
-            "start": sched.start_time.strftime("%H:%M"),
-            "end": sched.end_time.strftime("%H:%M"),
-        },
+        detail=audit_detail,
         created_at=utcnow(),
     ))
     await session.commit()
@@ -534,13 +812,13 @@ async def update_schedule(
     await broadcaster.publish(guild_id, {
         "type": "schedule_updated",
         "schedule_id": schedule_id,
-        "user_id": str(user_id),
+        "user_id": str(sched.user_id),
     })
 
     return {"success": True, "schedule": _serialize_schedule(sched)}
 
 
-# ─── DELETE /api/schedule/{id} — owner hoặc mod xoá ──────────────────────────
+# ─── DELETE /api/schedule/{id} — owner hoặc ADMIN xoá ─────────────────────────
 
 @router.delete("/{schedule_id}")
 @limiter.limit("20/minute")
@@ -548,9 +826,18 @@ async def delete_schedule(
     request: Request,
     schedule_id: int = Path(..., gt=0),
     guild_id: int = Query(...),
+    note: str | None = Query(None, description="Lý do (bắt buộc khi Admin xoá lịch người khác)"),
     session: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
+    """
+    Xoá lịch trực.
+    Quyền:
+      - DUTY_MEMBER: chỉ xoá được lịch của CHÍNH MÌNH
+      - DUTY_MOD:    chỉ xoá được lịch của CHÍNH MÌNH (KHÔNG xoá người khác)
+      - DUTY_ADMIN:  xoá được lịch của BẤT KỲ ai
+    """
+    from web.middleware.auth_guard import has_guild_role
     user_id = int(current_user["sub"])
     await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
 
@@ -564,9 +851,22 @@ async def delete_schedule(
         raise HTTPException(status_code=404, detail="Lịch không tồn tại")
 
     is_owner = sched.user_id == user_id
+    is_admin = False
+    note_clean = (note or "").strip() or None
     if not is_owner:
-        # Mod+ mới xoá được của người khác
-        await require_guild_role(guild_id, "DUTY_MOD", current_user, session)
+        # CHỈ DUTY_ADMIN được xoá lịch người khác. MOD bị block.
+        is_admin = await has_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+        if not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Chỉ chủ lịch hoặc Admin mới xoá được. Mod chỉ xoá được lịch của chính mình.",
+            )
+    # Audit policy nghiêm ngặt: MỌI lệnh xoá đều cần lý do
+    if not note_clean:
+        raise HTTPException(
+            status_code=400,
+            detail="Xoá lịch trực phải ghi LÝ DO (query param 'note').",
+        )
 
     snapshot = {
         "schedule_id": sched.id,
@@ -576,12 +876,19 @@ async def delete_schedule(
         "end": sched.end_time.strftime("%H:%M"),
     }
     await session.delete(sched)
+    audit_detail = {
+        **snapshot,
+        "via": "web",
+        "by_role": "ADMIN" if (not is_owner and is_admin) else "OWNER",
+    }
+    if note_clean:
+        audit_detail["note"] = note_clean
     session.add(AuditLog(
         guild_id=guild_id,
         user_id=user_id,
         username=current_user.get("username", f"user_{user_id}"),
         action=AuditAction.SCHEDULE_DELETED,
-        detail={**snapshot, "via": "web"},
+        detail=audit_detail,
         created_at=utcnow(),
     ))
     await session.commit()

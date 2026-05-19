@@ -5,7 +5,14 @@
  * Sử dụng AbortController để cancel khi component unmount hoặc dep đổi.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, APIError, type Me, type Guild } from './api';
+import {
+  api, APIError,
+  type Me, type Guild,
+  type OverviewStats, type ChartPoint, type RankingRow, type AttendanceUser,
+  type DutyLog, type ScheduleGrid, type ComplianceRow,
+  type LeaveRequest, type AuditLog,
+  type StaffListResponse, type PositionMeta, type GroupMeta, type SystemRole,
+} from '../lib/api';
 
 export interface AsyncState<T> {
   data: T | null;
@@ -65,15 +72,15 @@ export function useGuilds() {
 }
 
 export function useOverview(guildId: string | null, period: string, start?: string, end?: string) {
-  return useAsync(
-    () => (guildId ? api.overview(guildId, period, start, end) : Promise.resolve(null as any)),
+  return useAsync<OverviewStats | null>(
+    () => (guildId ? api.overview(guildId, period, start, end) : Promise.resolve(null)),
     [guildId, period, start, end],
   );
 }
 
 export function useChart(guildId: string | null, period: string) {
-  return useAsync(
-    () => (guildId ? api.chart(guildId, period) : Promise.resolve([] as any)),
+  return useAsync<ChartPoint[]>(
+    () => (guildId ? api.chart(guildId, period) : Promise.resolve([])),
     [guildId, period],
   );
 }
@@ -84,70 +91,114 @@ export function useRanking(
   mode: 'top' | 'bottom' = 'top',
   limit = 20,
 ) {
-  return useAsync(
-    () => (guildId ? api.ranking(guildId, period, mode, limit) : Promise.resolve([] as any)),
+  return useAsync<RankingRow[]>(
+    () => (guildId ? api.ranking(guildId, period, mode, limit) : Promise.resolve([])),
     [guildId, period, mode, limit],
   );
 }
 
 export function useAttendance(guildId: string | null, period: string) {
-  return useAsync(
-    () => (guildId ? api.attendance(guildId, period) : Promise.resolve([] as any)),
+  return useAsync<AttendanceUser[]>(
+    () => (guildId ? api.attendance(guildId, period) : Promise.resolve([])),
     [guildId, period],
   );
 }
 
-export function useLogs(guildId: string | null, page: number, search?: string) {
-  return useAsync(
+type LogsResponse = { items: DutyLog[]; total: number; page: number; page_size: number };
+export function useLogs(guildId: string | null, page: number, search?: string, period?: string) {
+  return useAsync<LogsResponse>(
     () =>
       guildId
-        ? api.logs(guildId, page, 20, undefined, search)
-        : Promise.resolve({ items: [], total: 0, page, page_size: 20 } as any),
-    [guildId, page, search],
+        ? (api.logs(guildId, page, 20, undefined, search, period) as Promise<LogsResponse>)
+        : Promise.resolve({ items: [], total: 0, page, page_size: 20 }),
+    [guildId, page, search, period],
   );
 }
 
 export function useScheduleGrid(guildId: string | null, period: string = 'week') {
-  return useAsync(
+  return useAsync<ScheduleGrid>(
     () =>
       guildId
         ? api.scheduleGrid(guildId, period)
-        : Promise.resolve({ week_start: '', days: [] } as any),
+        : Promise.resolve({ week_start: '', days: [] } as ScheduleGrid),
     [guildId, period],
   );
 }
 
+type CalendarResponse = { days: Array<{ date: string; slots?: any[]; shifts?: any[] }> };
 export function useScheduleCalendar(guildId: string | null, year: number, month: number) {
-  return useAsync(
+  return useAsync<CalendarResponse>(
     () =>
       guildId
-        ? api.scheduleCalendar(guildId, year, month)
-        : Promise.resolve({ days: [] } as any),
+        ? (api.scheduleCalendar(guildId, year, month) as unknown as Promise<CalendarResponse>)
+        : Promise.resolve({ days: [] }),
     [guildId, year, month],
   );
 }
 
 export function useScheduleCompliance(guildId: string | null, period: string) {
-  return useAsync(
-    () => (guildId ? api.scheduleCompliance(guildId, period) : Promise.resolve([] as any)),
+  return useAsync<ComplianceRow[]>(
+    () => (guildId ? api.scheduleCompliance(guildId, period) : Promise.resolve([])),
     [guildId, period],
   );
 }
 
 export function useLeaveList(guildId: string | null, status?: string) {
-  return useAsync(
-    () => (guildId ? api.leaveList(guildId, status) : Promise.resolve([] as any)),
+  return useAsync<LeaveRequest[]>(
+    () => (guildId ? api.leaveList(guildId, status) : Promise.resolve([])),
     [guildId, status],
   );
 }
 
+type AuditResponse = { items: AuditLog[]; total: number; resolved: Record<string, any> };
 export function useAuditLogs(guildId: string | null, page: number, action?: string) {
-  return useAsync(
+  return useAsync<AuditResponse>(
     () =>
       guildId
         ? api.auditLogs(guildId, page, 50, action)
-        : Promise.resolve({ items: [], total: 0 } as any),
+        : Promise.resolve({ items: [], total: 0, resolved: {} }),
     [guildId, page, action],
+  );
+}
+
+// ----- STAFF HOOKS -----
+
+type PositionsResp = { positions: PositionMeta[]; groups: GroupMeta[] };
+export function useStaffPositions(enabled: boolean) {
+  return useAsync<PositionsResp>(
+    () =>
+      enabled
+        ? api.staffPositions()
+        : Promise.resolve({ positions: [], groups: [] }),
+    [enabled],
+  );
+}
+
+export function useStaffList(
+  guildId: string | null,
+  opts: { group?: string; position?: string; is_active?: boolean; search?: string } = {},
+) {
+  return useAsync<StaffListResponse>(
+    () =>
+      guildId
+        ? api.staffList(guildId, opts as any)
+        : Promise.resolve({
+            items: [],
+            total: 0,
+            counts_by_group: { LANH_DAO: 0, Y_TE: 0, DAO_TAO: 0 },
+          } as StaffListResponse),
+    [guildId, opts.group, opts.position, opts.is_active, opts.search],
+  );
+}
+
+type PosRoleMapResp = { position_role_map: Record<string, SystemRole>; valid_system_roles: SystemRole[] };
+export function useStaffPositionRoleMap(guildId: string | null) {
+  return useAsync<PosRoleMapResp>(
+    () =>
+      guildId
+        ? api.staffGetPositionRoleMap(guildId)
+        : Promise.resolve({ position_role_map: {}, valid_system_roles: [] }),
+    [guildId],
   );
 }
 
@@ -274,4 +325,10 @@ export function useMutation<TArgs extends any[], TResult>(
   );
 
   return { mutate, loading, error };
+}
+
+// ----- Convenience helpers -----
+
+export function useLeavePending(guildId: string | null) {
+  return useLeaveList(guildId, 'PENDING');
 }

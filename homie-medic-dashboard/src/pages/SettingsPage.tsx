@@ -1,0 +1,445 @@
+import { useState, useEffect } from 'react';
+import {
+  Settings as SettingsIcon, Save, Shield, Hash, Bell, Plug, Lock, Users, AlertCircle,
+} from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { api, type SystemRole, formatError } from '../lib/api';
+import { Card } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Badge } from '../components/ui/badge';
+import { Input, Textarea, Label } from '../components/ui/input';
+import { NativeSelect } from '../components/ui/select';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
+import { cn } from '../lib/cn';
+
+const POSITIONS = [
+  { code: 'VIEN_TRUONG', label: 'Viện Trưởng', group: 'LANH_DAO', color: 'var(--pos-vien-truong)' },
+  { code: 'VIEN_PHO', label: 'Viện Phó', group: 'LANH_DAO', color: 'var(--pos-vien-pho)' },
+  { code: 'THU_KY', label: 'Thư Ký', group: 'LANH_DAO', color: 'var(--pos-thu-ky)' },
+  { code: 'QUAN_LY_BAC_SI', label: 'Quản Lý Bác Sĩ', group: 'LANH_DAO', color: 'var(--pos-qly-bac-si)' },
+  { code: 'TRUONG_KHOA', label: 'Trưởng Khoa', group: 'Y_TE', color: 'var(--pos-truong-khoa)' },
+  { code: 'PHO_KHOA', label: 'Phó Khoa', group: 'Y_TE', color: 'var(--pos-pho-khoa)' },
+  { code: 'BAC_SI', label: 'Bác Sĩ', group: 'Y_TE', color: 'var(--pos-bac-si)' },
+  { code: 'THUC_TAP_SINH', label: 'Thực Tập Sinh', group: 'DAO_TAO', color: 'var(--pos-thuc-tap-sinh)' },
+];
+
+export function SettingsPage() {
+  const { currentGuildId, currentGuild } = useAuth();
+  const isAdmin = currentGuild?.is_admin || false;
+
+  if (!isAdmin) {
+    return (
+      <Card className="p-8 max-w-md mx-auto text-center">
+        <Lock className="h-12 w-12 mx-auto text-[var(--muted-foreground)] mb-3" />
+        <h2 className="font-semibold mb-1">Yêu cầu quyền Admin</h2>
+        <p className="text-sm text-[var(--muted-foreground)]">
+          Chỉ tài khoản DUTY_ADMIN mới truy cập được trang Cài đặt.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-6xl mx-auto pb-24">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <SettingsIcon className="h-6 w-6 text-[var(--primary)]" />
+          Cài đặt hệ thống
+        </h1>
+        <p className="text-sm text-[var(--muted-foreground)] mt-1">
+          Cấu hình toàn cục cho Discord Bot và dashboard
+        </p>
+      </div>
+
+      <Tabs defaultValue="general">
+        <TabsList className="w-full justify-start overflow-x-auto">
+          <TabsTrigger value="general">
+            <SettingsIcon className="h-3.5 w-3.5" /> Chung
+          </TabsTrigger>
+          <TabsTrigger value="roles">
+            <Shield className="h-3.5 w-3.5" /> Vai trò
+          </TabsTrigger>
+          <TabsTrigger value="positions">
+            <Users className="h-3.5 w-3.5" /> Chức vụ → Quyền
+          </TabsTrigger>
+          <TabsTrigger value="channels">
+            <Hash className="h-3.5 w-3.5" /> Kênh Discord
+          </TabsTrigger>
+          <TabsTrigger value="notifications">
+            <Bell className="h-3.5 w-3.5" /> Thông báo
+          </TabsTrigger>
+          <TabsTrigger value="integrations">
+            <Plug className="h-3.5 w-3.5" /> Tích hợp
+          </TabsTrigger>
+          <TabsTrigger value="security">
+            <Lock className="h-3.5 w-3.5" /> Bảo mật
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="general">
+          <Card className="p-6 max-w-2xl space-y-4">
+            <div>
+              <Label>Tên hệ thống</Label>
+              <Input defaultValue="Homie Medic" className="mt-1" />
+            </div>
+            <div>
+              <Label>Múi giờ</Label>
+              <NativeSelect className="mt-1">
+                <option>Asia/Ho_Chi_Minh (UTC+7)</option>
+                <option>Asia/Bangkok (UTC+7)</option>
+                <option>Asia/Singapore (UTC+8)</option>
+                <option>UTC</option>
+              </NativeSelect>
+            </div>
+            <div>
+              <Label>Ngôn ngữ</Label>
+              <NativeSelect className="mt-1">
+                <option>Tiếng Việt</option>
+                <option>English</option>
+              </NativeSelect>
+            </div>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="roles">
+          <Card className="p-6 max-w-3xl">
+            <h3 className="font-semibold mb-2">Map Discord Role → System Role</h3>
+            <p className="text-sm text-[var(--muted-foreground)] mb-4">
+              Mỗi role hệ thống được ánh xạ tới 1 Discord role thật. Bot kiểm tra role này khi check quyền.
+            </p>
+            {(['DUTY_ADMIN', 'DUTY_MOD', 'DUTY_MEMBER'] as const).map(sysRole => (
+              <div key={sysRole} className="flex items-center gap-3 py-3 border-b border-[var(--border)] last:border-0">
+                <div className="flex-1">
+                  <p className="text-sm font-bold">{sysRole}</p>
+                  <p className="text-[10px] text-[var(--muted-foreground)]">
+                    {sysRole === 'DUTY_ADMIN' ? 'Toàn quyền (Viện Trưởng/Viện Phó)' :
+                     sysRole === 'DUTY_MOD' ? 'Quản lý (Thư ký, Trưởng khoa)' :
+                     'Member thường (Bác sĩ)'}
+                  </p>
+                </div>
+                <span className="text-[var(--muted-foreground)]">→</span>
+                <Input
+                  placeholder="Discord Role ID hoặc @role..."
+                  className="font-mono-id w-[260px]"
+                />
+              </div>
+            ))}
+            <p className="text-xs text-[var(--muted-foreground)] mt-3 p-3 bg-[var(--info)]/5 rounded-lg border-l-2 border-[var(--info)]">
+              💡 Tip: Trong Discord chạy <code className="bg-[var(--muted)] px-1 rounded">/setup role</code> để gán dễ hơn.
+            </p>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="positions">
+          <PositionRoleTab guildId={currentGuildId} />
+        </TabsContent>
+
+        <TabsContent value="channels">
+          <Card className="p-6 max-w-2xl space-y-4">
+            {[
+              { key: 'log_channel_id', label: 'Kênh chấm công', icon: '📋' },
+              { key: 'schedule_channel_id', label: 'Kênh đăng ký lịch', icon: '📅' },
+              { key: 'remind_channel_id', label: 'Kênh nhắc trực', icon: '🔔' },
+              { key: 'leave_channel_id', label: 'Kênh đơn nghỉ', icon: '🏖️' },
+              { key: 'staff_channel_id', label: 'Kênh staff', icon: '👥' },
+            ].map(c => (
+              <div key={c.key}>
+                <Label>{c.icon} {c.label}</Label>
+                <Input placeholder="Channel ID (snowflake)" className="font-mono-id mt-1" />
+              </div>
+            ))}
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="notifications">
+          <NotificationsTab guildId={currentGuildId} />
+        </TabsContent>
+
+        <TabsContent value="integrations">
+          <Card className="p-6 max-w-2xl space-y-4">
+            <div className="p-4 rounded-lg bg-[var(--success)]/5 border border-[var(--success)]/20">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="h-2 w-2 rounded-full bg-[var(--success)] animate-pulse" />
+                <p className="font-semibold text-[var(--success)]">✅ Discord Bot đang chạy</p>
+              </div>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Bot ID: 1498049415355830437 · 10 cogs loaded · 30+ slash commands
+              </p>
+            </div>
+            <div>
+              <Label>Webhook đầu ra (Telegram / Zalo / Email)</Label>
+              <Input placeholder="https://..." className="mt-1" />
+              <p className="text-[10px] text-[var(--muted-foreground)] mt-1">
+                Sẽ gửi notification ra dịch vụ ngoài. Sắp phát triển.
+              </p>
+            </div>
+            <div>
+              <Label>API Token quản lý</Label>
+              <Button variant="outline" className="w-full mt-1">+ Tạo token mới</Button>
+            </div>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="security">
+          <Card className="p-6 max-w-2xl space-y-4">
+            <div>
+              <Label>Xác thực 2 bước (2FA TOTP)</Label>
+              <Button variant="outline" className="w-full mt-1">
+                <Shield className="h-4 w-4" /> Setup Google Authenticator
+              </Button>
+            </div>
+            <div>
+              <Label>Session đang active</Label>
+              <div className="space-y-1 mt-1">
+                <div className="flex items-center justify-between p-3 rounded-lg border border-[var(--border)]">
+                  <div>
+                    <p className="text-sm font-medium">Chrome trên Windows · 192.168.1.100</p>
+                    <p className="text-xs text-[var(--muted-foreground)]">Hôm nay 14:30 (session hiện tại)</p>
+                  </div>
+                  <Badge variant="success" className="text-[10px]">Active</Badge>
+                </div>
+              </div>
+              <Button variant="destructive" className="w-full mt-2">Đăng xuất tất cả thiết bị</Button>
+            </div>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function PositionRoleTab({ guildId }: { guildId: string | null }) {
+  const [draft, setDraft] = useState<Record<string, SystemRole | ''>>({});
+  const [original, setOriginal] = useState<Record<string, SystemRole>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!guildId) return;
+    api.staffGetPositionRoleMap(guildId)
+      .then(r => {
+        setOriginal(r.position_role_map || {});
+        setDraft(r.position_role_map || {});
+      })
+      .catch(console.warn);
+  }, [guildId]);
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(original);
+
+  const save = async () => {
+    if (!guildId) return;
+    const note = window.prompt('Lý do cập nhật map chức vụ → quyền (≥3 ký tự):');
+    if (!note || note.trim().length < 3) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await api.staffUpdatePositionRoleMap(guildId, draft as any, note.trim());
+      setOriginal(r.position_role_map);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card className="p-6 max-w-3xl">
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h3 className="font-semibold">Map Chức vụ Y tế → Quyền hệ thống</h3>
+          <p className="text-sm text-[var(--muted-foreground)] mt-1">
+            Khi đổi chức vụ nhân sự, bot tự động cấp/gỡ Discord role tương ứng.
+          </p>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-lg bg-[var(--warning)]/10 border border-[var(--warning)]/20 mb-4 flex items-start gap-2">
+        <AlertCircle className="h-4 w-4 text-[var(--warning)] shrink-0 mt-0.5" />
+        <p className="text-xs text-[var(--warning)]">
+          <strong>Lưu ý:</strong> Bot Discord role phải <strong>CAO HƠN</strong> các role được map, nếu không sẽ báo 403 (Bot không có quyền).
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        {POSITIONS.map(p => (
+          <div key={p.code} className="flex items-center gap-3 py-2 border-b border-[var(--border)] last:border-0">
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
+            <div className="flex-1">
+              <p className="text-sm font-medium">{p.label}</p>
+              <p className="text-[10px] text-[var(--muted-foreground)]">{p.group}</p>
+            </div>
+            <span className="text-[var(--muted-foreground)]">→</span>
+            <NativeSelect
+              value={draft[p.code] || ''}
+              onChange={e => {
+                const v = e.target.value as SystemRole | '';
+                const next = { ...draft };
+                if (v) next[p.code] = v;
+                else delete next[p.code];
+                setDraft(next);
+              }}
+              className="w-[160px]"
+            >
+              <option value="">— Không map —</option>
+              <option value="DUTY_ADMIN">DUTY_ADMIN</option>
+              <option value="DUTY_MOD">DUTY_MOD</option>
+              <option value="DUTY_MEMBER">DUTY_MEMBER</option>
+            </NativeSelect>
+          </div>
+        ))}
+      </div>
+
+      {error && (
+        <div className="mt-3 flex items-start gap-2 p-3 rounded-lg bg-[var(--destructive)]/10 text-[var(--destructive)] text-sm">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      <Button onClick={save} disabled={!dirty || saving} className="mt-4 w-full">
+        <Save className="h-4 w-4" />
+        {saving ? 'Đang lưu...' : dirty ? 'Lưu thay đổi' : 'Đã đồng bộ'}
+      </Button>
+
+      {/* Floating save bar */}
+      {dirty && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-[var(--card)] border border-[var(--border)] rounded-full shadow-xl px-5 py-2 flex items-center gap-3 z-30">
+          <p className="text-sm">
+            <span className="text-[var(--warning)]">●</span> Bạn có thay đổi chưa lưu
+          </p>
+          <Button size="sm" onClick={save} disabled={saving}>
+            <Save className="h-3.5 w-3.5" /> Lưu ngay
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── Notifications Tab ────────────────────────────────────────────────────────
+
+const NOTIFY_OPTIONS: Array<{ key: string; label: string; desc: string; icon: string }> = [
+  {
+    key: 'remind_register_shift',
+    icon: '📋',
+    label: 'Nhắc đăng ký ca trực',
+    desc: 'Khi nhân viên mới nhận role medic mà chưa đăng ký lịch — bot tự DM nhắc nhở định kỳ',
+  },
+  {
+    key: 'remind_before_shift',
+    icon: '🔔',
+    label: 'Nhắc trước giờ trực',
+    desc: 'Trước giờ ca theo các mốc đã config (mặc định 60p, 30p, 5p) — bot tag user trong channel',
+  },
+  {
+    key: 'alert_late',
+    icon: '⏰',
+    label: 'Cảnh báo đi muộn',
+    desc: 'Khi qua giờ bắt đầu ca mà nhân viên chưa chấm công — DM cá nhân + báo admin',
+  },
+  {
+    key: 'alert_burnout',
+    icon: '🚨',
+    label: 'Cảnh báo burnout',
+    desc: 'Khi nhân viên trực quá nhiều giờ trong tuần (vượt ngưỡng) — tag admin',
+  },
+  {
+    key: 'daily_digest',
+    icon: '📊',
+    label: 'Daily digest 8h sáng',
+    desc: 'Tổng kết hoạt động hôm qua: top giờ trực, ai đi muộn, đơn nghỉ mới...',
+  },
+];
+
+function NotificationsTab({ guildId }: { guildId: string | null }) {
+  const [settings, setSettings] = useState<Record<string, boolean>>({});
+  const [original, setOriginal] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  useEffect(() => {
+    if (!guildId) return;
+    setLoading(true);
+    api.notificationSettings(guildId)
+      .then(r => {
+        setSettings(r.notification_settings || {});
+        setOriginal(r.notification_settings || {});
+      })
+      .catch(err => setError(formatError(err)))
+      .finally(() => setLoading(false));
+  }, [guildId]);
+
+  const dirty = JSON.stringify(settings) !== JSON.stringify(original);
+
+  const save = async () => {
+    if (!guildId) return;
+    const note = window.prompt('Lý do cập nhật thông báo (≥3 ký tự):');
+    if (!note || note.trim().length < 3) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await api.notificationSettingsUpdate(guildId, settings, note.trim());
+      setOriginal(r.notification_settings);
+      setSavedAt(new Date());
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <Card className="p-6 max-w-2xl"><p className="text-sm text-[var(--muted-foreground)]">Đang tải...</p></Card>;
+  }
+
+  return (
+    <Card className="p-6 max-w-2xl space-y-3">
+      <div className="mb-2">
+        <h3 className="font-semibold">Bật/tắt thông báo</h3>
+        <p className="text-sm text-[var(--muted-foreground)]">
+          Bot sẽ chỉ gửi các loại thông báo được bật ở đây
+        </p>
+      </div>
+
+      {NOTIFY_OPTIONS.map(opt => (
+        <label
+          key={opt.key}
+          className="flex items-center justify-between gap-3 p-3 rounded-lg border border-[var(--border)] hover:bg-[var(--muted)]/40 cursor-pointer transition-colors"
+        >
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <span className="text-xl shrink-0">{opt.icon}</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">{opt.label}</p>
+              <p className="text-xs text-[var(--muted-foreground)] leading-relaxed">{opt.desc}</p>
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={!!settings[opt.key]}
+            onChange={e => setSettings({ ...settings, [opt.key]: e.target.checked })}
+            className="w-5 h-5 accent-[var(--primary)] shrink-0"
+          />
+        </label>
+      ))}
+
+      {error && (
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-[var(--destructive)]/10 text-[var(--destructive)] text-sm">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      <div className="pt-3 flex justify-between items-center border-t border-[var(--border)]">
+        <p className="text-xs text-[var(--muted-foreground)]">
+          {savedAt && `Đã lưu lúc ${savedAt.toLocaleTimeString('vi-VN')}`}
+        </p>
+        <Button onClick={save} disabled={!dirty || saving}>
+          <Save className="h-4 w-4" />
+          {saving ? 'Đang lưu...' : dirty ? 'Lưu thay đổi' : 'Đã đồng bộ'}
+        </Button>
+      </div>
+    </Card>
+  );
+}

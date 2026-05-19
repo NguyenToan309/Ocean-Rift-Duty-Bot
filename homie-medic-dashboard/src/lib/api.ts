@@ -153,6 +153,7 @@ export interface DutyLog {
   id: number;
   user_id: string;
   username: string;
+  avatar_url: string | null;
   started_at: string;
   ended_at: string;
   duration_minutes: number;
@@ -215,6 +216,53 @@ export interface AuditLog {
   action: string;
   detail: Record<string, unknown>;
   created_at: string;
+}
+
+// ----- STAFF -----
+export type StaffGroup = 'LANH_DAO' | 'Y_TE' | 'DAO_TAO';
+export type SystemRole = 'DUTY_ADMIN' | 'DUTY_MOD' | 'DUTY_MEMBER';
+
+export interface PositionMeta {
+  code: string;          // VD: "VIEN_TRUONG"
+  label: string;         // "Viện Trưởng"
+  group: StaffGroup;
+  color: string;         // hex "#EF4444"
+  icon: string;          // emoji
+  level: number;         // 1 = cao nhất
+}
+
+export interface GroupMeta {
+  code: StaffGroup;
+  label: string;
+  color: string;
+  icon: string;
+  order: number;
+}
+
+export interface StaffMember {
+  id: number;
+  guild_id: string;
+  user_id: string;       // Discord ID (snowflake, string-safe)
+  username: string;
+  avatar_url: string | null;
+  position: string;
+  position_label: string;
+  position_group: StaffGroup;
+  position_color: string;
+  position_icon: string;
+  position_level: number;
+  department: string | null;
+  note: string | null;
+  is_active: boolean;
+  joined_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StaffListResponse {
+  items: StaffMember[];
+  total: number;
+  counts_by_group: Record<StaffGroup, number>;
 }
 
 // ============================================================
@@ -295,7 +343,7 @@ export const api = {
       total_minutes: number;
       total_members: number;
       total_hhmm: string;
-      top5: Array<{ username: string; total_minutes: number; sessions: number }>;
+      top5: Array<{ user_id?: string | null; username: string; avatar_url?: string | null; total_minutes: number; sessions: number }>;
     }>('/api/dashboard/overview', {
       query: { guild_id, period, date_from: start, date_to: end },
     });
@@ -310,9 +358,9 @@ export const api = {
       // Backend overview chưa compute compliance — lấy từ /attendance hoặc /schedule/compliance riêng
       compliance_rate: null,
       top_users: (r.top5 || []).map((u, i) => ({
-        user_id: `__top_${i}`, // backend /overview top5 không có user_id thực
+        user_id: String(u.user_id || `__top_${i}`),
         username: u.username,
-        avatar_url: null,
+        avatar_url: u.avatar_url ?? null,
         total_minutes: u.total_minutes,
         session_count: u.sessions,
       })),
@@ -350,6 +398,7 @@ export const api = {
         rank: number;
         user_id: string | number;
         username: string;
+        avatar_url?: string | null;
         total_minutes: number;
         sessions: number;
       }>;
@@ -368,7 +417,7 @@ export const api = {
       rank: it.rank,
       user_id: String(it.user_id ?? ''),
       username: it.username,
-      avatar_url: null,
+      avatar_url: it.avatar_url ?? null,
       total_minutes: it.total_minutes || 0,
       session_count: it.sessions || 0,
     }));
@@ -379,6 +428,7 @@ export const api = {
       items: Array<{
         user_id: string | null;
         username: string;
+        avatar_url?: string | null;
         session_count: number;
         total_minutes: number;
         avg_minutes: number;
@@ -398,7 +448,7 @@ export const api = {
       return {
         user_id: it.user_id ? String(it.user_id) : `__row_${i}`,
         username: it.username,
-        avatar_url: null,
+        avatar_url: it.avatar_url ?? null,
         // Giờ trực thường
         session_count: it.session_count || 0,
         total_minutes: it.total_minutes || 0,
@@ -481,6 +531,7 @@ export const api = {
     page_size = 20,
     user_id?: string,
     search?: string,
+    period?: string,
   ): Promise<{ items: DutyLog[]; total: number; page: number; page_size: number }> => {
     const r = await apiFetch<{
       total: number;
@@ -490,6 +541,7 @@ export const api = {
         id: number;
         user_id: string;
         username: string;
+        avatar_url?: string | null;
         started_at: string;
         ended_at: string;
         duration_minutes: number;
@@ -498,7 +550,7 @@ export const api = {
         image_url?: string | null;
       }>;
     }>('/api/dashboard/logs', {
-      query: { guild_id, page, page_size, user_id, search },
+      query: { guild_id, page, page_size, user_id, search, period: period || 'all' },
     });
     return {
       total: r.total || 0,
@@ -508,6 +560,7 @@ export const api = {
         id: it.id,
         user_id: String(it.user_id ?? ''),
         username: it.username,
+        avatar_url: it.avatar_url ?? null,
         started_at: it.started_at,
         ended_at: it.ended_at,
         duration_minutes: it.duration_minutes,
@@ -519,10 +572,10 @@ export const api = {
     };
   },
 
-  deleteLog: (guild_id: string, log_id: number) =>
+  deleteLog: (guild_id: string, log_id: number, note: string) =>
     apiFetch<void>(`/api/dashboard/logs/${log_id}`, {
       method: 'DELETE',
-      query: { guild_id },
+      query: { guild_id, note },
     }),
 
   // ----- SCHEDULE -----
@@ -534,6 +587,7 @@ export const api = {
       items: Array<{
         user_id: string | null;
         username: string;
+        avatar_url?: string | null;
         schedules: Array<{
           id: number;
           weekday: number;
@@ -572,7 +626,7 @@ export const api = {
           id: s.id,
           user_id: user.user_id ? String(user.user_id) : '',
           username: user.username,
-          avatar_url: null,
+          avatar_url: user.avatar_url ?? null,
           role_name: s.role_name ?? null,
           department: s.department ?? null,
           weekday: wd,
@@ -656,10 +710,57 @@ export const api = {
     return out;
   },
 
+  scheduleCreate: (
+    guild_id: string,
+    body: {
+      user_id: string;
+      weekday: number;
+      start_time: string;
+      end_time: string;
+      note: string;
+    },
+  ) =>
+    apiFetch<{ success: boolean; schedule: any }>('/api/schedule', {
+      method: 'POST',
+      query: { guild_id },
+      body,
+    }),
+
+  /**
+   * Admin set lại toàn bộ lịch user cho 1 khung giờ.
+   * Weekday KHÔNG trong list → deactivate. Khung giờ khác KHÔNG bị động.
+   */
+  scheduleBulkReplace: (
+    guild_id: string,
+    body: {
+      user_id: string;
+      weekdays: number[];      // 0=T2..6=CN
+      start_time: string;
+      end_time: string;
+      note: string;
+    },
+  ) =>
+    apiFetch<{
+      success: boolean;
+      created: number[];
+      updated: number[];
+      removed: number[];
+    }>('/api/schedule/bulk-replace', {
+      method: 'POST',
+      query: { guild_id },
+      body,
+    }),
+
   scheduleUpdate: (
     guild_id: string,
     schedule_id: number,
-    data: Partial<{ weekday: number; start_time: string; end_time: string; role_name: string }>,
+    data: Partial<{
+      weekday: number;
+      start_time: string;
+      end_time: string;
+      role_name: string;
+      note: string;    // lý do — bắt buộc khi admin sửa lịch người khác
+    }>,
   ) =>
     apiFetch<unknown>(`/api/schedule/${schedule_id}`, {
       method: 'PUT',
@@ -667,10 +768,41 @@ export const api = {
       body: data,
     }),
 
-  scheduleDelete: (guild_id: string, schedule_id: number) =>
+  scheduleDelete: (guild_id: string, schedule_id: number, note?: string) =>
     apiFetch<void>(`/api/schedule/${schedule_id}`, {
       method: 'DELETE',
-      query: { guild_id },
+      query: { guild_id, note },
+    }),
+
+  // ----- NOTIFICATION SETTINGS -----
+  notificationSettings: (guild_id: string) =>
+    apiFetch<{ notification_settings: Record<string, boolean> }>(
+      '/api/dashboard/notification-settings',
+      { query: { guild_id } },
+    ),
+
+  notificationSettingsUpdate: (
+    guild_id: string,
+    settings: Record<string, boolean>,
+    note: string,
+  ) =>
+    apiFetch<{ success: boolean; notification_settings: Record<string, boolean> }>(
+      '/api/dashboard/notification-settings',
+      { method: 'PUT', query: { guild_id }, body: { settings, note } },
+    ),
+
+  // Batch resolve avatars + usernames cho user_id từ Discord (cache 10p ở backend).
+  resolveUsers: (user_ids: string[]) =>
+    apiFetch<{
+      results: Record<string, {
+        user_id: string;
+        username: string;
+        global_name: string;
+        avatar_url: string;
+      }>;
+    }>('/api/dashboard/resolve-users', {
+      method: 'POST',
+      body: { user_ids },
     }),
 
   // ----- LEAVE -----
@@ -688,6 +820,7 @@ export const api = {
         id: number;
         user_id: string;
         username: string;
+        avatar_url?: string | null;
         type: string;
         status: string;
         start_date: string | null;
@@ -705,7 +838,7 @@ export const api = {
       id: it.id,
       user_id: String(it.user_id ?? ''),
       username: it.username,
-      avatar_url: null,
+      avatar_url: it.avatar_url ?? null,
       type: it.type,
       type_label: LEAVE_TYPE_LABELS[it.type] || it.type,
       start_date: it.start_date || '',
@@ -745,13 +878,18 @@ export const api = {
     page_size = 50,
     action?: string,
     user_id?: string,
-  ): Promise<{ items: AuditLog[]; total: number }> => {
+  ): Promise<{
+    items: AuditLog[];
+    total: number;
+    resolved: Record<string, { type: 'user' | 'channel' | 'role'; name: string }>;
+  }> => {
     const r = await apiFetch<any>('/api/audit/logs', {
       query: { guild_id, page, page_size, action, user_id },
     });
     const items = r.items || r.logs || [];
     return {
       total: r.total ?? items.length,
+      resolved: r.resolved || {},
       items: items.map((it: any) => ({
         id: it.id,
         user_id: String(it.user_id ?? ''),
@@ -794,6 +932,95 @@ export const api = {
       expires_at: r.expires_in_minutes ? `${r.expires_in_minutes} phút` : '',
     };
   },
+
+  // ----- STAFF MANAGEMENT -----
+
+  staffPositions: () =>
+    apiFetch<{ positions: PositionMeta[]; groups: GroupMeta[] }>('/api/staff/positions'),
+
+  staffList: (
+    guild_id: string,
+    opts: {
+      group?: StaffGroup;
+      position?: string;
+      is_active?: boolean;
+      search?: string;
+    } = {},
+  ) =>
+    apiFetch<StaffListResponse>('/api/staff/list', {
+      query: {
+        guild_id,
+        group: opts.group,
+        position: opts.position,
+        is_active: opts.is_active,
+        search: opts.search,
+      },
+    }),
+
+  staffDetail: (guild_id: string, user_id: string) =>
+    apiFetch<{ staff: StaffMember }>(`/api/staff/${user_id}`, {
+      query: { guild_id },
+    }),
+
+  staffAdd: (
+    guild_id: string,
+    body: {
+      user_id: string;
+      username: string;
+      position: string;
+      department?: string;
+      joined_at?: string;
+      note: string;
+    },
+  ) =>
+    apiFetch<{ success: boolean; staff: StaffMember }>('/api/staff', {
+      method: 'POST',
+      query: { guild_id },
+      body,
+    }),
+
+  staffUpdate: (
+    guild_id: string,
+    user_id: string,
+    body: {
+      position?: string;
+      department?: string | null;
+      username?: string;
+      is_active?: boolean;
+      joined_at?: string | null;
+      note: string;     // BẮT BUỘC
+    },
+  ) =>
+    apiFetch<{ success: boolean; staff: StaffMember; changes: Record<string, { before: unknown; after: unknown }> }>(
+      `/api/staff/${user_id}`,
+      { method: 'PUT', query: { guild_id }, body },
+    ),
+
+  staffRemove: (guild_id: string, user_id: string, note: string, hard = false) =>
+    apiFetch<{ success: boolean }>(`/api/staff/${user_id}`, {
+      method: 'DELETE',
+      query: { guild_id, note, hard },
+    }),
+
+  staffGetPositionRoleMap: (guild_id: string) =>
+    apiFetch<{ position_role_map: Record<string, SystemRole>; valid_system_roles: SystemRole[] }>(
+      '/api/staff/config/position-roles',
+      { query: { guild_id } },
+    ),
+
+  staffUpdatePositionRoleMap: (
+    guild_id: string,
+    map: Record<string, SystemRole | ''>,
+    note: string,
+  ) =>
+    apiFetch<{ success: boolean; position_role_map: Record<string, SystemRole> }>(
+      '/api/staff/config/position-roles',
+      {
+        method: 'PUT',
+        query: { guild_id },
+        body: { map, note },
+      },
+    ),
 };
 
 // ============================================================

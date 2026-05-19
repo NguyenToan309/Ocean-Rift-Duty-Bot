@@ -295,9 +295,9 @@ async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Me
     embed = discord.Embed(
         title="✍️  ·  BẢNG CHẤM CÔNG",
         description=(
-            f"### Chấm công ca trực — {user.display_name}\n"
+            f"### Xin chào, **{user.display_name}** 👋\n"
             f"📍 Channel chấm công: {channel_mention}\n"
-            f"-# *Upload screenshot LOG DUTY vào channel này → bot OCR + lưu DB tự động.*"
+            f"-# *Chỉ cần forward / screenshot tin nhắn LOG DUTY vào channel này — bot tự xử lý.*"
         ),
         color=COLOR_DUTY, timestamp=utcnow(),
     )
@@ -323,18 +323,23 @@ async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Me
         inline=True,
     )
 
-    # ── Cách upload (compact 1 dòng) ──
+    # ── 2 cách chấm công thực tế ──
     embed.add_field(
-        name="🚀  CÁCH CHẤM CÔNG",
+        name="🚀  CÁCH CHẤM CÔNG (Auto-scan)",
         value=(
-            f"📸 **Cách nhanh nhất:** Gửi thẳng ảnh LOG DUTY vào {channel_mention}\n"
-            f"🤖 *Bot auto OCR + kiểm trùng + lưu DB*\n"
-            f"-# Hoặc: `/log upload` (ảnh) · `/log forward` (text)"
+            f"**Cách 1 — Forward tin nhắn** ⏩\n"
+            f"Nhấn giữ tin nhắn LOG DUTY (từ bot bệnh viện) → **Forward** → chọn {channel_mention}.\n"
+            f"Bot đọc text tự động.\n\n"
+            f"**Cách 2 — Chụp ảnh** 📸\n"
+            f"Screenshot tin nhắn LOG DUTY → gửi ảnh vào {channel_mention}.\n"
+            f"Bot OCR tự động.\n\n"
+            f"✅ Bot phản hồi embed *“Đã ghi nhận ca trực”* ngay khi parse thành công.\n"
+            f"❌ Nếu format sai / trùng / sai tên → bot báo lỗi cụ thể (xoá tin & gửi lại)."
         ),
         inline=False,
     )
 
-    embed.set_footer(text="🔒 Mỗi log gắn Discord ID — không thể chấm hộ người khác · Click ❓ để xem format chuẩn")
+    embed.set_footer(text="🔒 Bot khớp tên trong LOG DUTY với Discord ID — không thể chấm hộ người khác · Click ❓ xem format")
     return embed
 
 
@@ -343,22 +348,53 @@ def _build_log_format_help_embed() -> discord.Embed:
     embed = discord.Embed(
         title="📋  Format LOG DUTY chuẩn",
         description=(
-            "Bot OCR/parse text theo regex chính xác. **Phải đúng template này:**\n\n"
+            "### Quy trình chuẩn\n"
+            "1️⃣ Bot bệnh viện (HomieMedic / khác) gửi tin nhắn **LOG DUTY** khi bạn kết thúc ca\n"
+            "2️⃣ Bạn **forward** hoặc **screenshot** tin nhắn đó vào channel chấm công\n"
+            "3️⃣ Bot này auto-scan → parse → lưu DB → reply embed xác nhận\n\n"
+            "### Format text bot mong đợi\n"
             "```yaml\n"
-            "LOG DUTY\n"
-            "Tên: {username}\n"
+            "LOG DUTY (Disconnect)\n"
+            "Tên: {tên bạn}\n"
             "Thời gian làm việc: {X} phút\n"
             "Thời gian bắt đầu: {DD/MM/YYYY HH:MM:SS}\n"
             "Thời gian kết thúc: {DD/MM/YYYY HH:MM:SS}\n"
-            "```\n"
-            "**Lưu ý:**\n"
-            "• `Tên:` phải khớp với username/nickname Discord của bạn\n"
-            "• Định dạng ngày `DD/MM/YYYY` (không chấp nhận MM/DD)\n"
-            "• Thời gian làm việc tính bằng **phút** (số nguyên)\n"
-            "• `bắt đầu` < `kết thúc`, không trùng ca cũ"
+            "```"
         ),
         color=COLOR_DUTY,
     )
+    embed.add_field(
+        name="✅  Bot chấp nhận",
+        value=(
+            "• Forward thẳng tin nhắn LOG DUTY\n"
+            "• Ảnh screenshot tin nhắn LOG DUTY\n"
+            "• Copy/paste text LOG DUTY thủ công\n"
+            "• Mọi biến thể: `LOG DUTY`, `LOG DUTY (Disconnect)`, có/không kèm timestamp footer"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="❌  Bot từ chối",
+        value=(
+            "• Tên trong LOG DUTY **không khớp** username/nickname Discord của bạn\n"
+            "  *(không chấm công hộ người khác)*\n"
+            "• Format ngày sai (phải `DD/MM/YYYY`)\n"
+            "• Trùng ca đã chấm (cùng thời gian, hoặc message_id đã lưu)\n"
+            "• `bắt đầu` ≥ `kết thúc`\n"
+            "• Thời gian làm việc lệch >5 phút so với (end − start)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔧  Slash command (fallback)",
+        value=(
+            "Khi auto-scan không hoạt động (channel không setup, format lạ…):\n"
+            "• `/log upload` — chọn file ảnh\n"
+            "• `/log forward` — paste text vào modal"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="💡 Tip: forward (cách 1) nhanh nhất vì bot đọc text trực tiếp, không cần OCR")
     return embed
 
 

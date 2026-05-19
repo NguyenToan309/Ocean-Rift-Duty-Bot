@@ -26,11 +26,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/leave", tags=["leave"])
 
 
-def _serialize(req: LeaveRequest) -> dict:
+def _serialize(req: LeaveRequest, avatar_url: str | None = None) -> dict:
     return {
         "id": req.id,
         "user_id": str(req.user_id),
         "username": req.username,
+        "avatar_url": avatar_url,
         "type": req.request_type,
         "status": req.status,
         "start_date": req.start_date.isoformat() if req.start_date else None,
@@ -87,11 +88,19 @@ async def list_leaves(
         )).scalar() or 0
         counts[s] = cnt
 
+    # Batch resolve avatars cho danh sách leave
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _uids = {r.user_id for r in items}
+    _info = await batch_resolve_user_info(_uids) if _uids else {}
+
     return {
         "page": page,
         "page_size": page_size,
         "counts": counts,
-        "items": [_serialize(r) for r in items],
+        "items": [
+            _serialize(r, avatar_url=(_info.get(r.user_id) or {}).get("avatar_url"))
+            for r in items
+        ],
     }
 
 
@@ -218,11 +227,12 @@ async def decide_leave(
     approved = bool(body.get("approved"))
     note = (body.get("note") or "").strip() or None
 
-    # Q9=b: bắt buộc note khi reject
-    if not approved and not note:
+    # Audit policy nghiêm ngặt: MỌI quyết định đều cần lý do (cả duyệt + từ chối)
+    if not note:
+        action_word = "duyệt" if approved else "từ chối"
         raise HTTPException(
             status_code=400,
-            detail="Bắt buộc phải có ghi chú (lý do) khi từ chối đơn.",
+            detail=f"Bắt buộc phải có lý do/ghi chú khi {action_word} đơn (field 'note').",
         )
 
     row = await session.execute(
