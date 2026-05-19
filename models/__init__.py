@@ -9,6 +9,11 @@ from models.schedule import (
     WEEKDAY_LABELS, WEEKDAY_SHORT,
 )
 from models.leave import LeaveRequest, LeaveRequestType, LeaveRequestStatus
+from models.staff_member import (
+    StaffMember, StaffPosition, StaffGroup,
+    POSITION_METADATA, GROUP_METADATA,
+    is_valid_position, get_position_level,
+)
 
 __all__ = [
     "Base",
@@ -26,4 +31,11 @@ __all__ = [
     "LeaveRequestStatus",
     "WEEKDAY_LABELS",
     "WEEKDAY_SHORT",
+    "StaffMember",
+    "StaffPosition",
+    "StaffGroup",
+    "POSITION_METADATA",
+    "GROUP_METADATA",
+    "is_valid_position",
+    "get_position_level",
 ]

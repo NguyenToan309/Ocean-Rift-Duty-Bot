@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config import settings
 from web.middleware.rate_limit import limiter
-from web.routers import auth, dashboard, export, audit, schedule, leave, realtime
+from web.routers import auth, dashboard, export, audit, schedule, leave, realtime, staff
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -146,6 +146,7 @@ app.include_router(audit.router)
 app.include_router(schedule.router)
 app.include_router(leave.router)
 app.include_router(realtime.router)
+app.include_router(staff.router)
 
 
 # ----- Pages -----
@@ -201,6 +202,34 @@ async def dashboard_page(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ----- SPA Catch-all -----
+# React Router dùng client-side routing. Khi user F5 ở /rankings, /staff, /settings...,
+# browser gửi GET tới FastAPI. FastAPI cần trả index.html để React Router xử lý URL.
+# CHỈ áp dụng cho route không bắt đầu bằng /api/, /auth/, /ws, /assets/, /static/.
+SPA_KNOWN_ROUTES = {
+    "login", "settings", "staff", "duty-logs", "schedule",
+    "leave-requests", "resign-requests", "rankings", "audit-log",
+    "403", "404", "500",
+}
+
+
+@app.get("/{full_path:path}")
+async def spa_catch_all(full_path: str, request: Request):
+    """Serve React SPA cho mọi route không match API/static. React Router lo phần còn lại."""
+    # Bỏ qua các prefix API/static — để FastAPI 404 đúng nghĩa
+    if full_path.startswith(("api/", "auth/", "ws", "assets/", "static/")):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Nếu có .ext (file thật) → 404 (không serve index cho file requests)
+    if "." in full_path.split("/")[-1] and not full_path.endswith(".html"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if _react_available:
+        return _serve_react_index(request)
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 # ----- Global error handler -----

@@ -175,6 +175,44 @@ def invalidate_role_cache(guild_id: int, user_id: int) -> None:
     _ROLE_CACHE.pop(key, None)
 
 
+async def has_guild_role(
+    guild_id: int,
+    role_name: str,
+    user_payload: dict,
+    session: AsyncSession,
+) -> bool:
+    """
+    Check user có role `role_name` (hoặc cao hơn) trong guild — KHÔNG raise.
+    Trả True/False. Discord API lỗi → False (an toàn).
+
+    Dùng khi cần optional check (vd: cho phép admin bypass ownership).
+    """
+    user_id = int(user_payload["sub"])
+    config_row = await session.execute(
+        select(GuildConfig).where(GuildConfig.guild_id == guild_id)
+    )
+    config = config_row.scalar_one_or_none()
+    if not config or not config.is_active:
+        return False
+
+    user_role_ids_raw = await fetch_member_role_ids(guild_id, user_id)
+    if user_role_ids_raw is None or not user_role_ids_raw:
+        return False
+
+    user_role_ids = set(user_role_ids_raw)
+    HIERARCHY = ["DUTY_ADMIN", "DUTY_MOD", "DUTY_MEMBER"]
+    try:
+        required_level = HIERARCHY.index(role_name)
+    except ValueError:
+        return False
+
+    for r in HIERARCHY[:required_level + 1]:
+        rid = config.role_map.get(r)
+        if rid and int(rid) in user_role_ids:
+            return True
+    return False
+
+
 async def require_guild_role(
     guild_id: int,
     role_name: str,

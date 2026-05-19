@@ -137,9 +137,19 @@ def get_quarter_label(month: int) -> str:
 
 
 def format_datetime_vn(dt: datetime, tz_str: str | None = None) -> str:
-    """Format datetime sang chuỗi tiếng Việt: '14:30 Thứ 3, 27/04/2026'"""
+    """Format datetime sang chuỗi tiếng Việt: '14:30 Thứ 3, 27/04/2026'
+
+    Convention:
+    - Naive datetime → giả định ĐÃ ở target tz (parser output, local time)
+      → KHÔNG convert, format trực tiếp
+    - Aware datetime → convert qua to_local (DB output là UTC aware)
+    """
     weekdays = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
-    local_dt = to_local(dt, tz_str)
+    if dt.tzinfo is None:
+        # Naive: assume already in display tz (e.g. parser output từ LOG DUTY text)
+        local_dt = dt
+    else:
+        local_dt = to_local(dt, tz_str)
     day_name = weekdays[local_dt.weekday()]
     return f"{local_dt.strftime('%H:%M')} {day_name}, {local_dt.strftime('%d/%m/%Y')}"
 

@@ -1117,6 +1117,63 @@ class LogDutyCog(commands.Cog):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @log_group.command(
+        name="scan",
+        description="Quét lịch sử kênh chấm công để bắt LOG DUTY bị bỏ sót (Mod+)",
+    )
+    @app_commands.describe(
+        limit="Số tin nhắn quét gần nhất (mặc định 200, tối đa 1000)",
+    )
+    @app_commands.checks.cooldown(rate=1, per=120.0)
+    async def log_scan(self, interaction: discord.Interaction, limit: int = 200):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        async with AsyncSessionLocal() as session:
+            if not await require_mod(interaction, session):
+                await send_no_permission(interaction, DutyRole.MOD)
+                return
+            config = await _get_guild_config(session, interaction.guild_id)
+
+        if not config or not config.log_channel_id:
+            await interaction.followup.send(
+                embed=build_error_embed(
+                    "Server chưa setup channel chấm công. Dùng `/setup channel` trước."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        limit = max(1, min(int(limit), 1000))
+        from bot.tasks.schedule_tasks import backfill_scan_guild
+        stats = await backfill_scan_guild(
+            self.bot, interaction.guild, config.log_channel_id, limit=limit,
+        )
+
+        if "error" in stats:
+            err_map = {
+                "channel_not_found": "Không tìm thấy channel chấm công.",
+                "no_permission_read_history": "Bot không có quyền **Read Message History** trong channel chấm công.",
+            }
+            msg = err_map.get(stats["error"], f"Lỗi: {stats['error']}")
+            await interaction.followup.send(embed=build_error_embed(msg), ephemeral=True)
+            return
+
+        channel_mention = f"<#{config.log_channel_id}>"
+        embed = discord.Embed(
+            title="🔍  Quét backfill hoàn tất",
+            description=(
+                f"Đã quét **{stats['scanned']}** tin nhắn gần nhất trong {channel_mention}.\n\n"
+                f"```diff\n"
+                f"+ {stats['saved']} log MỚI đã lưu\n"
+                f"  {stats['dup']} đã có trong DB (skip)\n"
+                f"  {stats['invalid']} parse được nhưng validate lỗi\n"
+                f"  {stats['no_match']} tên không khớp author (skip)\n"
+                f"```"
+            ),
+            color=0x10B981 if stats['saved'] > 0 else 0x64748B,
+        )
+        embed.set_footer(text="Job idempotent — chạy lại nhiều lần không sinh duplicate")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     @log_group.command(name="delete", description="Xóa 1 ca trực theo ID (CHỈ Admin)")
     @app_commands.describe(id="ID của ca trực (xem qua /log view)")
     @app_commands.checks.cooldown(rate=5, per=60.0)

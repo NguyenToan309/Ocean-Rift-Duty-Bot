@@ -674,6 +674,172 @@ async def _before_onboarding():
     pass
 
 
+# ─── Loop 5: backfill quét lịch sử kênh chấm công ────────────────────────────
+
+@tasks.loop(minutes=30)
+async def backfill_duty_scan_loop(bot: "commands.Bot"):
+    """
+    Chạy mỗi 30 phút. Quét lịch sử kênh chấm công để bắt LOG DUTY bị bỏ sót khi:
+      - Bot offline / restart đúng lúc user gửi LOG DUTY
+      - Parse fail silent
+      - User edit/forward message sau khi gửi gốc
+
+    Logic:
+      1. Cho mỗi guild có log_channel_id
+      2. Fetch tối đa 200 message gần nhất trong channel
+      3. Skip nếu message_id đã có trong duty_logs (source_message_id)
+      4. Trích text candidates + parse + validate
+      5. Verify tên trùng author (strict) — skip im lặng nếu sai (đã có on_message handle)
+      6. Save DutyLog với source='backfill'
+
+    Đây là job idempotent — chạy lại nhiều lần không sinh duplicate.
+    """
+    try:
+        await _backfill_duty_scan_tick(bot)
+    except Exception as e:
+        logger.error(f"[backfill-loop] Lỗi: {e}", exc_info=True)
+
+
+async def backfill_scan_guild(
+    bot: "commands.Bot",
+    guild: discord.Guild,
+    log_channel_id: int,
+    limit: int = 200,
+) -> dict:
+    """
+    Quét 1 guild. Trả stats {scanned, saved, dup, invalid, no_match}.
+    Được gọi cả từ loop (định kỳ) và từ slash command (manual).
+    """
+    from bot.cogs.log_duty import (
+        LogDutyCog, _resolve_name_owner, _save_duty_log,
+    )
+    from bot.utils.parser import parse_duty_text
+    from bot.utils.time_utils import to_utc
+
+    channel = guild.get_channel(log_channel_id)
+    if not channel or not isinstance(channel, discord.TextChannel):
+        return {"scanned": 0, "saved": 0, "dup": 0, "invalid": 0, "no_match": 0,
+                "error": "channel_not_found"}
+
+    stats = {"scanned": 0, "saved": 0, "dup": 0, "invalid": 0, "no_match": 0}
+
+    # Pre-fetch tất cả source_message_id đã có trong DB cho guild — tối ưu
+    # tránh query DB từng message.
+    async with AsyncSessionLocal() as session:
+        rows = await session.execute(
+            select(DutyLog.source_message_id)
+            .where(DutyLog.guild_id == guild.id)
+            .where(DutyLog.source_message_id.isnot(None))
+        )
+        existing_msg_ids = {r[0] for r in rows.all()}
+
+    try:
+        async for msg in channel.history(limit=limit):
+            stats["scanned"] += 1
+            if msg.author.bot:
+                continue
+            if msg.id in existing_msg_ids:
+                stats["dup"] += 1
+                continue
+
+            candidates = LogDutyCog._extract_message_text(msg)
+            if not candidates:
+                continue
+
+            parsed = None
+            for text in candidates:
+                result = parse_duty_text(text)
+                if result is None:
+                    continue
+                errors = result.validate()
+                if errors:
+                    stats["invalid"] += 1
+                    parsed = None
+                    break
+                parsed = result
+                break
+
+            if not parsed:
+                continue
+
+            # Verify name khớp author
+            status, matches = _resolve_name_owner(guild, parsed.username)
+            if status != "ok" or matches[0].id != msg.author.id:
+                stats["no_match"] += 1
+                continue
+
+            # Save
+            async with AsyncSessionLocal() as save_session:
+                try:
+                    await _save_duty_log(
+                        session=save_session,
+                        guild_id=guild.id,
+                        user_id=msg.author.id,
+                        username=parsed.username,
+                        started_at=to_utc(parsed.started_at),
+                        ended_at=to_utc(parsed.ended_at),
+                        duration_minutes=parsed.duration_minutes,
+                        raw_text=parsed.raw_text,
+                        source="backfill",
+                        source_message_id=msg.id,
+                        submitted_by=msg.author.id,
+                    )
+                    save_session.add(AuditLog(
+                        guild_id=guild.id,
+                        user_id=msg.author.id,
+                        username=str(msg.author),
+                        action=AuditAction.LOG_UPLOADED,
+                        detail={
+                            "for_user": parsed.username,
+                            "duration_minutes": parsed.duration_minutes,
+                            "source": "backfill",
+                            "source_message_id": str(msg.id),
+                        },
+                        created_at=utcnow(),
+                    ))
+                    await save_session.commit()
+                    stats["saved"] += 1
+                    # Cập nhật existing set để các iteration sau không trùng
+                    existing_msg_ids.add(msg.id)
+                except Exception as e:
+                    await save_session.rollback()
+                    # Lỗi save thường do duplicate Layer 2 (cùng user + thời gian)
+                    logger.debug(f"[backfill] Save skip msg {msg.id}: {e}")
+                    stats["dup"] += 1
+    except discord.Forbidden:
+        return {**stats, "error": "no_permission_read_history"}
+    except discord.HTTPException as e:
+        return {**stats, "error": f"discord_api: {e}"}
+
+    return stats
+
+
+async def _backfill_duty_scan_tick(bot: "commands.Bot"):
+    """Quét tất cả guild có log_channel_id. Log stats."""
+    async with AsyncSessionLocal() as session:
+        cfgs = (await session.execute(
+            select(GuildConfig)
+            .where(GuildConfig.is_active == True)  # noqa: E712
+            .where(GuildConfig.log_channel_id.isnot(None))
+        )).scalars().all()
+
+    for cfg in cfgs:
+        guild = bot.get_guild(cfg.guild_id)
+        if not guild:
+            continue
+        try:
+            stats = await backfill_scan_guild(bot, guild, cfg.log_channel_id, limit=200)
+        except Exception as e:
+            logger.error(f"[backfill] Guild {cfg.guild_id} lỗi: {e}", exc_info=True)
+            continue
+        if stats.get("saved", 0) > 0:
+            logger.info(
+                f"[backfill] Guild {cfg.guild_id} ({cfg.guild_name}): "
+                f"scanned={stats['scanned']} saved={stats['saved']} "
+                f"dup={stats['dup']} invalid={stats['invalid']} no_match={stats['no_match']}"
+            )
+
+
 # ─── Wire-up ─────────────────────────────────────────────────────────────────
 
 def start_background_tasks(bot: "commands.Bot"):
@@ -690,6 +856,7 @@ def start_background_tasks(bot: "commands.Bot"):
     end_of_day_check_loop.before_loop(_wait_ready)
     onboarding_scan_loop.before_loop(_wait_ready)
     process_web_decisions_loop.before_loop(_wait_ready)
+    backfill_duty_scan_loop.before_loop(_wait_ready)
 
     if not pre_shift_remind_loop.is_running():
         pre_shift_remind_loop.start(bot)
@@ -699,4 +866,9 @@ def start_background_tasks(bot: "commands.Bot"):
         onboarding_scan_loop.start(bot)
     if not process_web_decisions_loop.is_running():
         process_web_decisions_loop.start(bot)
-    logger.info("Đã khởi động background tasks: pre_shift, eod_check, onboarding_scan, process_web_decisions")
+    if not backfill_duty_scan_loop.is_running():
+        backfill_duty_scan_loop.start(bot)
+    logger.info(
+        "Đã khởi động background tasks: pre_shift, eod_check, "
+        "onboarding_scan, process_web_decisions, backfill_duty_scan"
+    )

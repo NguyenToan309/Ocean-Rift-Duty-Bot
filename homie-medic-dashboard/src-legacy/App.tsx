@@ -19,8 +19,17 @@ import {
   useAuditLogs,
   useRealtime,
   useMutation,
+  useStaffPositions,
+  useStaffList,
 } from './lib/hooks';
 import { api, formatError } from './lib/api';
+import {
+  getActionMeta,
+  formatAuditDetail,
+  categoryBadgeClass,
+  categoryIconBgClass,
+  getAllKnownActions,
+} from './lib/audit';
 import {
   minutesToHours,
   minutesToHHMM,
@@ -52,7 +61,11 @@ import {
   Filter,
   CheckCircle2,
   Clock,
-  AlertCircle
+  AlertCircle,
+  UserPlus,
+  Pencil,
+  Stethoscope,
+  X
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -145,6 +158,139 @@ function OverviewQuickActions({
   );
 }
 
+/** Card cấu hình map chức vụ → role hệ thống (Admin only). */
+function PositionRoleMapCard({ guildId }: { guildId: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  const mapQ = useStaffList(null); // placeholder — only need for re-renders
+  void mapQ;
+  // Fetch the actual map
+  const [mapData, setMapData] = useState<Record<string, string> | null>(null);
+  useEffect(() => {
+    if (!guildId || !expanded) return;
+    api
+      .staffGetPositionRoleMap(guildId)
+      .then((r) => {
+        setMapData(r.position_role_map || {});
+        setDraft(r.position_role_map || {});
+      })
+      .catch((err) => console.warn('Load position role map failed:', err));
+  }, [guildId, expanded]);
+
+  const positions = [
+    { code: 'VIEN_TRUONG', label: 'Viện Trưởng', group: '🏥 Lãnh đạo' },
+    { code: 'VIEN_PHO', label: 'Viện Phó', group: '🏥 Lãnh đạo' },
+    { code: 'THU_KY', label: 'Thư Ký', group: '🏥 Lãnh đạo' },
+    { code: 'QUAN_LY_BAC_SI', label: 'Quản Lý Bác Sĩ', group: '🏥 Lãnh đạo' },
+    { code: 'TRUONG_KHOA', label: 'Trưởng Khoa', group: '🩺 Y tế' },
+    { code: 'PHO_KHOA', label: 'Phó Khoa', group: '🩺 Y tế' },
+    { code: 'BAC_SI', label: 'Bác Sĩ', group: '🩺 Y tế' },
+    { code: 'THUC_TAP_SINH', label: 'Thực Tập Sinh', group: '🎓 Đào tạo' },
+  ];
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(mapData);
+
+  return (
+    <div className="bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-xl shadow-sm overflow-hidden">
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-[var(--color-brand-muted)] text-[var(--color-brand)] flex items-center justify-center">
+            <Settings size={16} />
+          </div>
+          <div className="text-left">
+            <p className="font-bold text-sm">Cấu hình quyền theo chức vụ</p>
+            <p className="text-xs text-slate-500">Map chức vụ y tế → role hệ thống (Admin only)</p>
+          </div>
+        </div>
+        <ChevronDown
+          size={18}
+          className={cn('transition-transform text-slate-400', expanded && 'rotate-180')}
+        />
+      </button>
+
+      {expanded && (
+        <div className="px-4 py-4 border-t border-[var(--color-border)] space-y-3">
+          <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 text-xs text-amber-600 dark:text-amber-400">
+            <strong>Lưu ý:</strong> Đây là config logic — chưa tự động cấp role Discord. Bot sẽ chỉ
+            áp dụng khi user có Discord role tương ứng (DUTY_ADMIN/MOD/MEMBER). Chức vụ chỉ là label hiển thị.
+          </div>
+
+          {positions.map((p) => (
+            <div
+              key={p.code}
+              className="flex items-center justify-between gap-3 py-1.5 border-b border-[var(--color-border)]/50 last:border-0"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="font-bold text-sm truncate">{p.label}</p>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">{p.group}</p>
+              </div>
+              <select
+                value={draft[p.code] || ''}
+                onChange={(e) =>
+                  setDraft((d) => {
+                    const next = { ...d };
+                    if (e.target.value) next[p.code] = e.target.value;
+                    else delete next[p.code];
+                    return next;
+                  })
+                }
+                className="px-3 py-1.5 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-xs font-bold focus:ring-2 focus:ring-[var(--color-brand)] outline-none cursor-pointer min-w-[140px]"
+              >
+                <option value="">— Không map —</option>
+                <option value="DUTY_ADMIN">DUTY_ADMIN</option>
+                <option value="DUTY_MOD">DUTY_MOD</option>
+                <option value="DUTY_MEMBER">DUTY_MEMBER</option>
+              </select>
+            </div>
+          ))}
+
+          <div className="flex justify-between items-center pt-3">
+            <p className="text-xs text-slate-500">
+              {savedAt && `Đã lưu lúc ${savedAt.toLocaleTimeString('vi-VN')}`}
+            </p>
+            <button
+              disabled={!dirty || saving || !guildId}
+              onClick={async () => {
+                if (!guildId) return;
+                const note = window.prompt(
+                  'Lý do cập nhật map chức vụ → quyền (BẮT BUỘC ≥3 ký tự):',
+                );
+                if (!note || note.trim().length < 3) {
+                  alert('Cần ghi lý do (≥3 ký tự).');
+                  return;
+                }
+                setSaving(true);
+                try {
+                  const r = await api.staffUpdatePositionRoleMap(
+                    guildId,
+                    draft as any,
+                    note.trim(),
+                  );
+                  setMapData(r.position_role_map);
+                  setSavedAt(new Date());
+                } catch (err) {
+                  alert('Lỗi: ' + formatError(err));
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="px-4 py-2 bg-[var(--color-brand)] text-white rounded-lg text-sm font-bold hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {saving ? 'Đang lưu…' : dirty ? 'Lưu thay đổi' : 'Đã đồng bộ'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type AuthState = 'loading' | 'anon' | 'need_2fa' | 'authed';
 type Period = 'day' | 'week' | 'month' | 'quarter';
 
@@ -159,10 +305,26 @@ export default function App() {
 
   // ----- NAVIGATION -----
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'ranking' | 'attendance' | 'schedule' | 'leave' | 'logs' | 'audit'
+    'overview' | 'ranking' | 'attendance' | 'schedule' | 'leave' | 'logs' | 'audit' | 'staff'
   >('overview');
   const [scheduleTab, setScheduleTab] = useState<'grid' | 'calendar' | 'compliance'>('grid');
   const [leaveTab, setLeaveTab] = useState<'pending' | 'approved' | 'rejected' | 'resign'>('pending');
+
+  // ----- STAFF STATE -----
+  const [staffFilterGroup, setStaffFilterGroup] = useState<'' | 'LANH_DAO' | 'Y_TE' | 'DAO_TAO'>('');
+  const [staffSearch, setStaffSearch] = useState('');
+  const [staffShowInactive, setStaffShowInactive] = useState(false);
+  const [editingStaff, setEditingStaff] = useState<import('./lib/api').StaffMember | null>(null);
+  const [addingStaff, setAddingStaff] = useState(false);
+  const [staffForm, setStaffForm] = useState({
+    user_id: '',
+    username: '',
+    position: 'BAC_SI',
+    department: '',
+    joined_at: '',
+    note: '',
+  });
+  const [staffSaving, setStaffSaving] = useState(false);
 
   // ----- UI STATE -----
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -193,6 +355,9 @@ export default function App() {
   const [logsPage, setLogsPage] = useState(1);
   const [logsSearch, setLogsSearch] = useState('');
   const [auditPage, setAuditPage] = useState(1);
+  const [auditActionFilter, setAuditActionFilter] = useState<string>('');
+  const [auditDateFilter, setAuditDateFilter] = useState<string>('');
+  const [auditUserFilter, setAuditUserFilter] = useState<string>('');
   const [rankingSearch, setRankingSearch] = useState('');
   // Attendance view mode: 'hours' = giờ trực thông thường | 'compliance' = tuân thủ ca theo lịch
   const [attendanceViewMode, setAttendanceViewMode] = useState<'hours' | 'compliance' | 'auto'>('auto');
@@ -240,11 +405,47 @@ export default function App() {
     leaveTab.toUpperCase(),
   );
   const logsQ = useLogs(authState === 'authed' && activeTab === 'logs' ? guildId : null, logsPage, logsSearch);
-  const auditQ = useAuditLogs(authState === 'authed' && activeTab === 'audit' ? guildId : null, auditPage);
+  const auditQ = useAuditLogs(
+    authState === 'authed' && activeTab === 'audit' ? guildId : null,
+    auditPage,
+    auditActionFilter || undefined,
+  );
 
   // Pending leave count cho topbar bell badge — luôn fetch khi đã auth
   const pendingLeavesQ = useLeaveList(authState === 'authed' ? guildId : null, 'PENDING');
   const pendingLeavesCount = pendingLeavesQ.data?.length ?? 0;
+
+  // ----- STAFF DATA -----
+  const staffPositionsQ = useStaffPositions(authState === 'authed' && activeTab === 'staff');
+  const staffListQ = useStaffList(
+    authState === 'authed' && activeTab === 'staff' ? guildId : null,
+    {
+      group: staffFilterGroup || undefined,
+      is_active: staffShowInactive ? undefined : true,
+      search: staffSearch || undefined,
+    },
+  );
+
+  // User cache: map<discord_id, username> — collect từ mọi nguồn có sẵn
+  // để audit log có thể hiển thị tên người dùng kèm Discord ID.
+  const userCache = useMemo(() => {
+    const m = new Map<string, string>();
+    const addIfValid = (id?: string | null, name?: string | null) => {
+      if (id && name && /^\d{15,}$/.test(id)) m.set(id, name);
+    };
+    attendanceQ.data?.forEach((u) => addIfValid(u.user_id, u.username));
+    fullRankQ.data?.forEach((r) => addIfValid(r.user_id, r.username));
+    topRankQ.data?.forEach((r) => addIfValid(r.user_id, r.username));
+    logsQ.data?.items?.forEach((l) => addIfValid(l.user_id, l.username));
+    leaveQ.data?.forEach((lv) => addIfValid(lv.user_id, lv.username));
+    pendingLeavesQ.data?.forEach((lv) => addIfValid(lv.user_id, lv.username));
+    auditQ.data?.items?.forEach((r) => addIfValid(r.user_id, r.username));
+    if (me?.user_id && me.username) addIfValid(me.user_id, me.global_name || me.username);
+    return m;
+  }, [
+    attendanceQ.data, fullRankQ.data, topRankQ.data,
+    logsQ.data, leaveQ.data, pendingLeavesQ.data, auditQ.data, me,
+  ]);
 
   // ----- REALTIME -----
   // Backend /ws bắt buộc guild_id; chỉ connect khi đã chọn guild.
@@ -303,13 +504,17 @@ export default function App() {
   // WEEKLY_SHIFTS flatten cho schedule grid
   const WEEKLY_SHIFTS = useMemo(() => {
     if (!scheduleGridQ.data) return [];
-    const out: Array<{ id: number; name: string; role: string; time: string; dept: string; status: string; day: number }> = [];
+    const out: Array<{
+      id: number; user_id: string; name: string; role: string;
+      time: string; dept: string; status: string; day: number;
+    }> = [];
     for (const day of scheduleGridQ.data.days) {
       for (const slot of day.slots) {
         // status đơn giản: nếu weekday < today = completed, == today = active, > today = upcoming
         const status = day.weekday < TODAY_INDEX ? 'completed' : day.weekday === TODAY_INDEX ? 'active' : 'upcoming';
         out.push({
           id: slot.id,
+          user_id: slot.user_id,
           name: slot.username,
           role: slot.role_name || 'Trực',
           time: `${slot.start_time} - ${slot.end_time}`,
@@ -601,6 +806,7 @@ export default function App() {
 
   const navItems = [
     { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
+    { id: 'staff', label: 'Nhân sự', icon: Stethoscope },
     { id: 'ranking', label: 'Bảng xếp hạng', icon: Trophy },
     { id: 'attendance', label: 'Chấm công', icon: ClipboardList },
     { id: 'schedule', label: 'Lịch trực', icon: Calendar },
@@ -1695,27 +1901,54 @@ export default function App() {
                         </div>
 
                         <div className="space-y-1.5">
-                          <label className="text-xs font-bold uppercase text-slate-500 tracking-wider">Ghi chú audit</label>
+                          <label className="text-xs font-bold uppercase text-slate-500 tracking-wider">
+                            Lý do thay đổi <span className="text-red-500">*</span> <span className="text-slate-400 normal-case font-normal lowercase">(bắt buộc — sẽ lưu vào audit log)</span>
+                          </label>
                           <textarea
                             value={shiftForm.note}
                             onChange={(e) => setShiftForm({ ...shiftForm, note: e.target.value })}
                             className="w-full px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-900 border border-[var(--color-border)] text-sm outline-none h-20 resize-none focus:ring-2 focus:ring-[var(--color-brand)]"
-                            placeholder="Lý do thay đổi ca trực..."
+                            placeholder="VD: Đổi ca để bù cho đồng nghiệp / Sửa giờ vì có lịch trùng / Xoá vì đăng ký nhầm…"
                           />
                         </div>
+
+                        {/* Cảnh báo + bắt buộc nhập note khi sửa lịch người khác */}
+                        {(() => {
+                          const isOwnShift = me?.user_id && editingShift?.user_id && String(me.user_id) === String(editingShift.user_id);
+                          if (!isOwnShift) {
+                            return (
+                              <div className="px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-700 dark:text-amber-300 mb-2">
+                                <strong>⚠️ Admin override</strong> — Bạn đang sửa lịch của <strong>{editingShift?.name}</strong>.
+                                <br />Vui lòng ghi <strong>lý do</strong> vào ô bên dưới (bắt buộc — sẽ lưu audit log).
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
 
                         <div className="flex gap-3 pt-4">
                           <button
                             onClick={async () => {
                               if (!guildId || !editingShift?.id) { setEditingShift(null); return; }
                               if (!window.confirm(`Xoá ca trực #${editingShift.id} của ${editingShift.name}?`)) return;
+                              let note = shiftForm.note?.trim() || '';
+                              if (!note) {
+                                const v = window.prompt(
+                                  `Lý do XOÁ lịch của ${editingShift.name} (BẮT BUỘC):`,
+                                );
+                                if (!v || !v.trim()) {
+                                  alert('Cần ghi lý do để xoá lịch.');
+                                  return;
+                                }
+                                note = v.trim();
+                              }
                               setShiftSaving(true);
                               try {
-                                await api.scheduleDelete(guildId, editingShift.id);
+                                await api.scheduleDelete(guildId, editingShift.id, note);
                                 scheduleGridQ.refetch();
                                 setEditingShift(null);
                               } catch (err: any) {
-                                alert('Lỗi xoá: ' + (err?.detail || 'không xác định'));
+                                alert('Lỗi xoá: ' + formatError(err));
                               } finally {
                                 setShiftSaving(false);
                               }
@@ -1739,6 +1972,11 @@ export default function App() {
                                 alert('Giờ bắt đầu và kết thúc không được trùng.');
                                 return;
                               }
+                              const note = shiftForm.note?.trim() || '';
+                              if (!note) {
+                                alert('Vui lòng ghi LÝ DO thay đổi vào ô "Ghi chú audit" bên trên (bắt buộc — sẽ lưu audit log).');
+                                return;
+                              }
                               setShiftSaving(true);
                               try {
                                 await api.scheduleUpdate(guildId, editingShift.id, {
@@ -1746,11 +1984,12 @@ export default function App() {
                                   start_time: shiftForm.start_time,
                                   end_time: shiftForm.end_time,
                                   role_name: shiftForm.role_name || undefined,
+                                  note: note || undefined,
                                 });
                                 scheduleGridQ.refetch();
                                 setEditingShift(null);
                               } catch (err: any) {
-                                alert('Lỗi lưu: ' + (err?.detail || 'không xác định'));
+                                alert('Lỗi lưu: ' + formatError(err));
                               } finally {
                                 setShiftSaving(false);
                               }
@@ -1852,9 +2091,13 @@ export default function App() {
                             <button
                               onClick={async () => {
                                 if (!guildId) return;
-                                const note = window.prompt('Lý do từ chối (tuỳ chọn):') || '';
+                                const note = window.prompt(`Lý do TỪ CHỐI đơn của ${leave.name} (BẮT BUỘC):`);
+                                if (!note || !note.trim()) {
+                                  alert('Cần ghi lý do để từ chối đơn.');
+                                  return;
+                                }
                                 try {
-                                  await api.leaveDecision(guildId, leave.id, 'REJECTED', note);
+                                  await api.leaveDecision(guildId, leave.id, 'REJECTED', note.trim());
                                   leaveQ.refetch();
                                 } catch (err: any) {
                                   alert('Lỗi: ' + formatError(err));
@@ -1865,9 +2108,13 @@ export default function App() {
                             <button
                               onClick={async () => {
                                 if (!guildId) return;
-                                if (!window.confirm(`Duyệt đơn của ${leave.name}?`)) return;
+                                const note = window.prompt(`Lý do/ghi chú khi DUYỆT đơn của ${leave.name} (BẮT BUỘC):`);
+                                if (!note || !note.trim()) {
+                                  alert('Cần ghi lý do/ghi chú để duyệt đơn.');
+                                  return;
+                                }
                                 try {
-                                  await api.leaveDecision(guildId, leave.id, 'APPROVED');
+                                  await api.leaveDecision(guildId, leave.id, 'APPROVED', note.trim());
                                   leaveQ.refetch();
                                 } catch (err: any) {
                                   alert('Lỗi: ' + formatError(err));
@@ -2146,9 +2393,15 @@ export default function App() {
                             <button
                               onClick={async () => {
                                 if (!guildId) return;
-                                if (!window.confirm(`Xoá log #${log.id}?`)) return;
+                                const note = window.prompt(
+                                  `Xoá log #${log.id} (${log.username})\n\nLý do (BẮT BUỘC, ≥3 ký tự):`,
+                                );
+                                if (!note || note.trim().length < 3) {
+                                  alert('Cần ghi lý do (tối thiểu 3 ký tự) để xoá log.');
+                                  return;
+                                }
                                 try {
-                                  await api.deleteLog(guildId, log.id);
+                                  await api.deleteLog(guildId, log.id, note.trim());
                                   logsQ.refetch();
                                 } catch (err: any) {
                                   alert('Lỗi: ' + formatError(err));
@@ -2187,14 +2440,14 @@ export default function App() {
             )}
 
             {activeTab === 'audit' && (
-              <motion.div 
+              <motion.div
                 key="audit"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                <div className="flex justify-between items-center">
+                <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
                   <div>
                     <h2 className="text-2xl font-bold tracking-tight">Nhật ký hệ thống (Audit)</h2>
                     <p className="text-sm text-[var(--color-text-secondary)]">Truy vết mọi hành động quản trị và thay đổi dữ liệu</p>
@@ -2202,16 +2455,50 @@ export default function App() {
                 </div>
 
                 <div className="bg-[var(--color-bg-surface)] rounded-2xl border border-[var(--color-border)] shadow-sm overflow-hidden">
-                  <div className="p-4 border-b border-[var(--color-border)] bg-slate-50 dark:bg-slate-900 flex gap-4">
-                     <select className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-[var(--color-border)] text-xs font-bold focus:ring-2 focus:ring-[var(--color-brand)] outline-none">
-                       <option>Tất cả hành động</option>
-                       <option>Sửa lịch trực</option>
-                       <option>Phê duyệt nghỉ phép</option>
-                       <option>Thay đổi quyền</option>
-                     </select>
-                     <input type="date" className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-[var(--color-border)] text-xs font-bold outline-none" />
+                  {/* Filter toolbar */}
+                  <div className="p-4 border-b border-[var(--color-border)] bg-slate-50 dark:bg-slate-900/60 flex flex-wrap gap-3 items-center">
+                    <select
+                      value={auditActionFilter}
+                      onChange={(e) => { setAuditActionFilter(e.target.value); setAuditPage(1); }}
+                      className="px-3 py-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] text-xs font-bold focus:ring-2 focus:ring-[var(--color-brand)] outline-none cursor-pointer min-w-[200px]"
+                    >
+                      <option value="">— Tất cả hành động —</option>
+                      {getAllKnownActions().map((a) => (
+                        <option key={a.code} value={a.code}>{a.emoji} {a.label}</option>
+                      ))}
+                    </select>
+
+                    <input
+                      type="date"
+                      value={auditDateFilter}
+                      onChange={(e) => setAuditDateFilter(e.target.value)}
+                      placeholder="Ngày"
+                      className="px-3 py-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] text-xs font-bold outline-none focus:ring-2 focus:ring-[var(--color-brand)]"
+                    />
+
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={auditUserFilter}
+                        onChange={(e) => setAuditUserFilter(e.target.value)}
+                        placeholder="Tìm theo tên user…"
+                        className="pl-9 pr-3 py-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] text-xs font-bold outline-none focus:ring-2 focus:ring-[var(--color-brand)] w-56"
+                      />
+                    </div>
+
+                    {(auditActionFilter || auditDateFilter || auditUserFilter) && (
+                      <button
+                        onClick={() => {
+                          setAuditActionFilter(''); setAuditDateFilter(''); setAuditUserFilter('');
+                          setAuditPage(1);
+                        }}
+                        className="text-xs font-bold text-[var(--color-brand)] hover:underline"
+                      >Xoá bộ lọc</button>
+                    )}
                   </div>
-                  
+
+                  {/* List */}
                   <div className="divide-y divide-[var(--color-border)]">
                     {auditQ.loading && (
                       <div className="p-12 text-center text-sm text-slate-500">Đang tải audit log…</div>
@@ -2219,71 +2506,346 @@ export default function App() {
                     {!auditQ.loading && auditQ.data && auditQ.data.items.length === 0 && (
                       <div className="p-12 text-center text-sm text-slate-500">Chưa có hành động nào được ghi lại.</div>
                     )}
-                    {(auditQ.data?.items || []).map((row) => {
-                      // Phân loại type theo prefix action
-                      const type =
-                        row.action.startsWith('DELETE') || row.action.startsWith('REJECT') || row.action.includes('FAILURE')
-                          ? 'danger'
-                          : row.action.startsWith('APPROVE') || row.action.startsWith('CREATE')
-                          ? 'success'
-                          : row.action.startsWith('UPDATE') || row.action.startsWith('CHANGE')
-                          ? 'warning'
-                          : 'info';
-                      const detailStr = typeof row.detail === 'object' && row.detail !== null
-                        ? Object.entries(row.detail)
-                            .filter(([_, v]) => v !== null && v !== undefined)
-                            .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
-                            .join(' • ')
-                        : String(row.detail || '');
-                      return (
-                        <div key={row.id} className="p-4 flex items-start gap-4 hover:bg-slate-50 dark:hover:bg-slate-800/10 transition-all group">
-                          <div className={cn(
-                            "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
-                            type === 'warning' ? "bg-amber-500/10 text-amber-500" :
-                            type === 'success' ? "bg-green-500/10 text-green-500" :
-                            type === 'danger' ? "bg-red-500/10 text-red-500" : "bg-blue-500/10 text-blue-500"
-                          )}>
-                            <ShieldAlert size={20} />
+                    {(() => {
+                      // Filter client-side: date + user search (action đã filter server-side)
+                      let items = auditQ.data?.items || [];
+                      if (auditDateFilter) {
+                        items = items.filter((r) => r.created_at.slice(0, 10) === auditDateFilter);
+                      }
+                      if (auditUserFilter) {
+                        const q = auditUserFilter.toLowerCase();
+                        items = items.filter((r) => r.username.toLowerCase().includes(q));
+                      }
+                      if (items.length === 0 && (auditDateFilter || auditUserFilter)) {
+                        return (
+                          <div className="p-12 text-center text-sm text-slate-500">
+                            Không có kết quả khớp bộ lọc trên trang này. Thử trang kế hoặc xoá bộ lọc.
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono">{row.action}</span>
-                              <span className="text-[10px] text-slate-500 font-bold uppercase font-mono">{formatDateTime(row.created_at)}</span>
+                        );
+                      }
+                      return items.map((row) => {
+                        const meta = getActionMeta(row.action);
+                        const chips = formatAuditDetail(row.detail, {
+                          resolved: auditQ.data?.resolved,
+                          users: userCache,
+                        });
+                        return (
+                          <div key={row.id} className="px-4 py-3 flex items-start gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-all">
+                            {/* Icon */}
+                            <div className={cn(
+                              "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-lg",
+                              categoryIconBgClass(meta.category)
+                            )}>
+                              <span aria-hidden>{meta.emoji}</span>
                             </div>
-                            <p className="text-sm font-medium">
-                              <span className="font-bold text-[var(--color-brand)]">{row.username}</span>
-                              {detailStr && <> — <span className="italic text-[var(--color-text-secondary)]">{detailStr}</span></>}
-                            </p>
+
+                            {/* Content */}
+                            <div className="flex-1 min-w-0">
+                              {/* Row 1: action label badge + timestamp */}
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className={cn(
+                                  "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                                  categoryBadgeClass(meta.category)
+                                )}>
+                                  {meta.label}
+                                </span>
+                                <code className="text-[9px] text-slate-400 font-mono opacity-70" title="Action code gốc">{row.action}</code>
+                                <span className="text-[10px] text-slate-500 font-mono ml-auto tabular-nums">
+                                  {formatDateTime(row.created_at)}
+                                </span>
+                              </div>
+
+                              {/* Row 2: actor */}
+                              <p className="text-sm font-medium mb-1">
+                                <span className="text-[var(--color-text-secondary)]">Bởi </span>
+                                <span className="font-bold text-[var(--color-brand)]">{row.username}</span>
+                              </p>
+
+                              {/* Row 3: detail chips */}
+                              {chips.length > 0 && (
+                                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+                                  {chips.map((chip, i) => (
+                                    <span key={i} className="text-xs">
+                                      {chip.label && (
+                                        <span className="text-slate-500 font-medium">{chip.label}: </span>
+                                      )}
+                                      <span className="font-mono font-bold text-[var(--color-text-main)] tabular-nums">
+                                        {chip.value}
+                                      </span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
 
-                  <div className="p-6 bg-slate-50 dark:bg-slate-900 border-t border-[var(--color-border)] flex justify-between items-center text-xs">
-                    <span className="text-slate-500">
-                      Hiển thị {auditQ.data?.items.length || 0} / {auditQ.data?.total.toLocaleString('vi-VN') || 0}
+                  {/* Pagination footer */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-900/60 border-t border-[var(--color-border)] flex justify-between items-center text-xs">
+                    <span className="text-slate-500 tabular-nums">
+                      Trang <span className="font-bold text-[var(--color-text-main)]">{auditPage}</span>
+                      {auditQ.data && (
+                        <> · {auditQ.data.items.length} dòng · Tổng <span className="font-bold">{auditQ.data.total.toLocaleString('vi-VN')}</span></>
+                      )}
                     </span>
                     <div className="flex gap-2">
                       <button
                         onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
                         disabled={auditPage <= 1}
-                        className="px-3 py-1 border border-[var(--color-border)] rounded font-bold hover:bg-white dark:hover:bg-slate-800 disabled:opacity-30"
-                      >Trước</button>
-                      <span className="px-3 py-1 font-bold">{auditPage}</span>
+                        className="px-3 py-1 border border-[var(--color-border)] rounded font-bold hover:bg-[var(--color-bg-surface)] disabled:opacity-30 disabled:cursor-not-allowed"
+                      >← Trước</button>
                       <button
                         onClick={() => setAuditPage((p) => p + 1)}
                         disabled={!auditQ.data || auditQ.data.items.length < 50}
-                        className="px-3 py-1 border border-[var(--color-border)] rounded font-bold hover:bg-white dark:hover:bg-slate-800 disabled:opacity-30"
-                      >Tiếp</button>
+                        className="px-3 py-1 border border-[var(--color-border)] rounded font-bold hover:bg-[var(--color-bg-surface)] disabled:opacity-30 disabled:cursor-not-allowed"
+                      >Tiếp →</button>
                     </div>
                   </div>
                 </div>
               </motion.div>
             )}
 
-            {activeTab !== 'overview' && activeTab !== 'schedule' && activeTab !== 'ranking' && activeTab !== 'leave' && activeTab !== 'attendance' && activeTab !== 'logs' && activeTab !== 'audit' && (
-              <motion.div 
+            {activeTab === 'staff' && (
+              <motion.div
+                key="staff"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* Header */}
+                <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
+                  <div>
+                    <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+                      <Stethoscope size={28} className="text-[var(--color-brand)]" /> Quản lý Nhân sự
+                    </h2>
+                    <p className="text-sm text-[var(--color-text-secondary)]">
+                      Phân chức vụ y tế cho từng nhân viên trong ngành. Mọi thay đổi đều ghi audit log.
+                    </p>
+                  </div>
+                  {currentGuild?.is_admin && (
+                    <button
+                      onClick={() => {
+                        setAddingStaff(true);
+                        setEditingStaff(null);
+                        setStaffForm({
+                          user_id: '',
+                          username: '',
+                          position: 'BAC_SI',
+                          department: '',
+                          joined_at: '',
+                          note: '',
+                        });
+                      }}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-[var(--color-brand)] text-white rounded-lg font-bold hover:brightness-110 transition-all shadow-sm"
+                    >
+                      <UserPlus size={18} /> Thêm nhân sự
+                    </button>
+                  )}
+                </div>
+
+                {/* Filter bar */}
+                <div className="flex flex-wrap items-center gap-3 bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-xl p-3 shadow-sm">
+                  <div className="relative flex-1 min-w-[200px]">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <input
+                      type="text"
+                      placeholder="Tìm theo tên…"
+                      value={staffSearch}
+                      onChange={(e) => setStaffSearch(e.target.value)}
+                      className="w-full pl-10 pr-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-[var(--color-brand)] outline-none"
+                    />
+                  </div>
+                  <select
+                    value={staffFilterGroup}
+                    onChange={(e) => setStaffFilterGroup(e.target.value as any)}
+                    className="px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm font-bold focus:ring-2 focus:ring-[var(--color-brand)] outline-none cursor-pointer"
+                  >
+                    <option value="">— Tất cả nhóm —</option>
+                    <option value="LANH_DAO">🏥 Lãnh đạo</option>
+                    <option value="Y_TE">🩺 Y tế</option>
+                    <option value="DAO_TAO">🎓 Đào tạo</option>
+                  </select>
+                  <label className="inline-flex items-center gap-2 px-3 py-2 text-sm cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={staffShowInactive}
+                      onChange={(e) => setStaffShowInactive(e.target.checked)}
+                      className="accent-[var(--color-brand)]"
+                    />
+                    Hiện cả người đã nghỉ
+                  </label>
+                </div>
+
+                {/* Stats by group */}
+                <div className="grid grid-cols-3 gap-3">
+                  {([
+                    { key: 'LANH_DAO', label: 'LÃNH ĐẠO', icon: '🏥', color: '#EF4444' },
+                    { key: 'Y_TE', label: 'Y TẾ', icon: '🩺', color: '#22C55E' },
+                    { key: 'DAO_TAO', label: 'ĐÀO TẠO', icon: '🎓', color: '#9CA3AF' },
+                  ] as const).map((g) => (
+                    <div
+                      key={g.key}
+                      className="bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-xl p-4 flex items-center justify-between shadow-sm"
+                    >
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{g.icon} {g.label}</p>
+                        <p className="text-2xl font-bold mt-1" style={{ color: g.color }}>
+                          {staffListQ.data?.counts_by_group?.[g.key] || 0}
+                        </p>
+                      </div>
+                      <div
+                        className="w-10 h-10 rounded-lg flex items-center justify-center text-xl"
+                        style={{ backgroundColor: `${g.color}22` }}
+                      >
+                        {g.icon}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Group sections */}
+                {staffListQ.loading && (
+                  <div className="text-center py-12 text-slate-500">Đang tải danh sách nhân sự…</div>
+                )}
+
+                {!staffListQ.loading && staffListQ.data && staffListQ.data.items.length === 0 && (
+                  <div className="bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-xl p-12 text-center">
+                    <Users size={48} className="mx-auto text-slate-400 mb-3" />
+                    <p className="text-lg font-bold mb-1">Chưa có nhân sự nào</p>
+                    <p className="text-sm text-slate-500">
+                      {currentGuild?.is_admin
+                        ? 'Bấm "Thêm nhân sự" hoặc dùng lệnh /nhansu add trong Discord.'
+                        : 'Admin chưa thêm nhân sự vào hệ thống.'}
+                    </p>
+                  </div>
+                )}
+
+                {!staffListQ.loading && staffListQ.data && staffListQ.data.items.length > 0 && (
+                  <div className="space-y-6">
+                    {(['LANH_DAO', 'Y_TE', 'DAO_TAO'] as const).map((groupCode) => {
+                      const groupItems = staffListQ.data!.items.filter((m) => m.position_group === groupCode);
+                      if (groupItems.length === 0) return null;
+                      const groupMeta =
+                        groupCode === 'LANH_DAO' ? { label: 'LÃNH ĐẠO', icon: '🏥', color: '#EF4444' } :
+                        groupCode === 'Y_TE' ? { label: 'Y TẾ', icon: '🩺', color: '#22C55E' } :
+                        { label: 'ĐÀO TẠO', icon: '🎓', color: '#9CA3AF' };
+                      return (
+                        <div key={groupCode}>
+                          <div className="flex items-center gap-2 mb-3">
+                            <div
+                              className="h-0.5 flex-1"
+                              style={{ backgroundColor: `${groupMeta.color}40` }}
+                            />
+                            <h3
+                              className="text-sm font-bold uppercase tracking-widest px-3"
+                              style={{ color: groupMeta.color }}
+                            >
+                              {groupMeta.icon} {groupMeta.label} ({groupItems.length})
+                            </h3>
+                            <div
+                              className="h-0.5 flex-1"
+                              style={{ backgroundColor: `${groupMeta.color}40` }}
+                            />
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {groupItems.map((m) => (
+                              <div
+                                key={m.id}
+                                className={cn(
+                                  "bg-[var(--color-bg-surface)] border rounded-xl p-4 hover:shadow-md transition-all relative overflow-hidden",
+                                  m.is_active ? "border-[var(--color-border)]" : "border-dashed border-slate-400/50 opacity-70"
+                                )}
+                              >
+                                <div
+                                  className="absolute left-0 top-0 bottom-0 w-1"
+                                  style={{ backgroundColor: m.position_color }}
+                                />
+                                <div className="flex items-start gap-3 pl-2">
+                                  <div
+                                    className="w-12 h-12 rounded-full flex items-center justify-center text-2xl shrink-0"
+                                    style={{ backgroundColor: `${m.position_color}22` }}
+                                  >
+                                    {m.position_icon || '👤'}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-bold text-base truncate">{m.username}</p>
+                                    <p className="text-xs text-slate-500 font-mono truncate" title={m.user_id}>
+                                      ID: {m.user_id}
+                                    </p>
+                                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                      <span
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold"
+                                        style={{
+                                          backgroundColor: `${m.position_color}22`,
+                                          color: m.position_color,
+                                        }}
+                                      >
+                                        {m.position_label}
+                                      </span>
+                                      {m.department && (
+                                        <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-500">
+                                          {m.department}
+                                        </span>
+                                      )}
+                                      {!m.is_active && (
+                                        <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-500">
+                                          Đã nghỉ
+                                        </span>
+                                      )}
+                                    </div>
+                                    {m.note && (
+                                      <p className="text-xs text-slate-500 mt-2 line-clamp-2 italic">_{m.note}_</p>
+                                    )}
+                                  </div>
+                                  {currentGuild?.is_admin && (
+                                    <button
+                                      onClick={() => {
+                                        setEditingStaff(m);
+                                        setAddingStaff(false);
+                                        setStaffForm({
+                                          user_id: m.user_id,
+                                          username: m.username,
+                                          position: m.position,
+                                          department: m.department || '',
+                                          joined_at: m.joined_at ? m.joined_at.split('T')[0] : '',
+                                          note: '',
+                                        });
+                                      }}
+                                      className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-[var(--color-brand)] transition-all shrink-0"
+                                      aria-label="Sửa"
+                                    >
+                                      <Pencil size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {staffListQ.error && (
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-500 text-sm">
+                    Lỗi tải danh sách: {formatError(staffListQ.error)}
+                  </div>
+                )}
+
+                {/* Position → System Role mapping config (Admin only) */}
+                {currentGuild?.is_admin && (
+                  <PositionRoleMapCard guildId={guildId} />
+                )}
+              </motion.div>
+            )}
+
+            {activeTab !== 'overview' && activeTab !== 'schedule' && activeTab !== 'ranking' && activeTab !== 'leave' && activeTab !== 'attendance' && activeTab !== 'logs' && activeTab !== 'audit' && activeTab !== 'staff' && (
+              <motion.div
                 key="coming-soon"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -2294,7 +2856,7 @@ export default function App() {
                 </div>
                 <h2 className="text-2xl font-bold">Màn hình {navItems.find(i => i.id === activeTab)?.label} đang được hoàn thiện</h2>
                 <p className="text-slate-500 max-w-sm">Chúng tôi đang thiết kế dữ liệu mẫu thực tế cho phần này để tránh các placeholder sáo rỗng.</p>
-                <button 
+                <button
                   onClick={() => setActiveTab('overview')}
                   className="px-6 py-2 bg-[var(--color-brand)] text-white rounded-lg font-bold hover:brightness-110 transition-all"
                 >
@@ -2570,6 +3132,251 @@ export default function App() {
                   onClick={() => setAttendanceDetail(null)}
                   className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 font-bold text-sm hover:brightness-110 transition-all"
                 >Đóng</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Add/Edit Staff Modal */}
+      <AnimatePresence>
+        {(addingStaff || editingStaff) && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+            onClick={() => {
+              if (!staffSaving) {
+                setAddingStaff(false);
+                setEditingStaff(null);
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden"
+            >
+              <div className="px-6 py-4 border-b border-[var(--color-border)] flex justify-between items-center">
+                <div>
+                  <h3 className="text-lg font-bold">
+                    {addingStaff ? 'Thêm nhân sự mới' : 'Cập nhật nhân sự'}
+                  </h3>
+                  {editingStaff && (
+                    <p className="text-xs text-slate-500 font-mono mt-0.5">ID: {editingStaff.user_id}</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    if (!staffSaving) {
+                      setAddingStaff(false);
+                      setEditingStaff(null);
+                    }
+                  }}
+                  className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-all"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                {addingStaff && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                        Discord User ID <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="VD: 1119880453671899196"
+                        value={staffForm.user_id}
+                        onChange={(e) => setStaffForm({ ...staffForm, user_id: e.target.value.replace(/\D/g, '') })}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm font-mono focus:ring-2 focus:ring-[var(--color-brand)] outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                        Tên hiển thị <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="VD: BS. Nguyễn Văn A"
+                        value={staffForm.username}
+                        onChange={(e) => setStaffForm({ ...staffForm, username: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-[var(--color-brand)] outline-none"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Chức vụ <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={staffForm.position}
+                    onChange={(e) => setStaffForm({ ...staffForm, position: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm font-bold focus:ring-2 focus:ring-[var(--color-brand)] outline-none cursor-pointer"
+                  >
+                    {/* Group by group */}
+                    <optgroup label="🏥 LÃNH ĐẠO">
+                      <option value="VIEN_TRUONG">🏥 Viện Trưởng</option>
+                      <option value="VIEN_PHO">🏥 Viện Phó</option>
+                      <option value="THU_KY">📋 Thư Ký</option>
+                      <option value="QUAN_LY_BAC_SI">👨‍⚕️ Quản Lý Bác Sĩ</option>
+                    </optgroup>
+                    <optgroup label="🩺 Y TẾ">
+                      <option value="TRUONG_KHOA">🩺 Trưởng Khoa</option>
+                      <option value="PHO_KHOA">🩺 Phó Khoa</option>
+                      <option value="BAC_SI">👨‍⚕️ Bác Sĩ</option>
+                    </optgroup>
+                    <optgroup label="🎓 ĐÀO TẠO">
+                      <option value="THUC_TAP_SINH">🎓 Thực Tập Sinh</option>
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Khoa / Phòng ban
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="VD: Khoa Nội, Khoa Cấp cứu (optional)"
+                    value={staffForm.department}
+                    onChange={(e) => setStaffForm({ ...staffForm, department: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-[var(--color-brand)] outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Ngày vào làm
+                  </label>
+                  <input
+                    type="date"
+                    value={staffForm.joined_at}
+                    onChange={(e) => setStaffForm({ ...staffForm, joined_at: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-[var(--color-brand)] outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Lý do <span className="text-red-500">* (BẮT BUỘC ≥3 ký tự)</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder={
+                      addingStaff
+                        ? 'VD: Thêm nhân sự mới đầu kỳ, đã ký HĐ ngày…'
+                        : 'VD: Bổ nhiệm Trưởng khoa từ ngày…, đổi khoa do…'
+                    }
+                    value={staffForm.note}
+                    onChange={(e) => setStaffForm({ ...staffForm, note: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-[var(--color-border)] rounded-lg text-sm focus:ring-2 focus:ring-[var(--color-brand)] outline-none resize-none"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Mọi thay đổi đều được ghi lại trong Audit Log với lý do này.
+                  </p>
+                </div>
+              </div>
+
+              <div className="px-6 py-4 border-t border-[var(--color-border)] flex justify-between gap-2">
+                {editingStaff && currentGuild?.is_admin && (
+                  <button
+                    disabled={staffSaving}
+                    onClick={async () => {
+                      if (!guildId || !editingStaff) return;
+                      const note = window.prompt(
+                        `Gỡ ${editingStaff.username} khỏi danh sách hoạt động?\n\nLý do (≥3 ký tự):`,
+                      );
+                      if (!note || note.trim().length < 3) {
+                        alert('Cần ghi lý do (≥3 ký tự).');
+                        return;
+                      }
+                      setStaffSaving(true);
+                      try {
+                        await api.staffRemove(guildId, editingStaff.user_id, note.trim(), false);
+                        setEditingStaff(null);
+                        staffListQ.refetch();
+                      } catch (err) {
+                        alert('Lỗi: ' + formatError(err));
+                      } finally {
+                        setStaffSaving(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-sm font-bold transition-all"
+                  >
+                    Gỡ khỏi danh sách
+                  </button>
+                )}
+                <div className="flex gap-2 ml-auto">
+                  <button
+                    disabled={staffSaving}
+                    onClick={() => {
+                      setAddingStaff(false);
+                      setEditingStaff(null);
+                    }}
+                    className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:brightness-110 rounded-lg text-sm font-bold transition-all"
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    disabled={staffSaving}
+                    onClick={async () => {
+                      if (!guildId) return;
+                      if (staffForm.note.trim().length < 3) {
+                        alert('Cần ghi lý do (≥3 ký tự).');
+                        return;
+                      }
+                      if (addingStaff) {
+                        if (!staffForm.user_id || staffForm.user_id.length < 15) {
+                          alert('Discord ID không hợp lệ (≥15 chữ số).');
+                          return;
+                        }
+                        if (!staffForm.username.trim()) {
+                          alert('Tên hiển thị bắt buộc.');
+                          return;
+                        }
+                      }
+                      setStaffSaving(true);
+                      try {
+                        if (addingStaff) {
+                          await api.staffAdd(guildId, {
+                            user_id: staffForm.user_id,
+                            username: staffForm.username.trim(),
+                            position: staffForm.position,
+                            department: staffForm.department.trim() || undefined,
+                            joined_at: staffForm.joined_at || undefined,
+                            note: staffForm.note.trim(),
+                          });
+                        } else if (editingStaff) {
+                          await api.staffUpdate(guildId, editingStaff.user_id, {
+                            position: staffForm.position,
+                            department: staffForm.department.trim() || null,
+                            joined_at: staffForm.joined_at || null,
+                            note: staffForm.note.trim(),
+                          });
+                        }
+                        setAddingStaff(false);
+                        setEditingStaff(null);
+                        staffListQ.refetch();
+                      } catch (err) {
+                        alert('Lỗi: ' + formatError(err));
+                      } finally {
+                        setStaffSaving(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-[var(--color-brand)] text-white rounded-lg text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {staffSaving ? 'Đang lưu…' : addingStaff ? 'Thêm nhân sự' : 'Lưu thay đổi'}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </motion.div>

@@ -3,7 +3,7 @@ dashboard.py — API trả dữ liệu cho web dashboard
 Tất cả endpoint yêu cầu xác thực JWT
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -137,6 +137,7 @@ async def get_overview(
     # Top 5
     top5 = await session.execute(
         select(
+            DutyLog.user_id,
             DutyLog.username,
             func.sum(DutyLog.duration_minutes).label("total_minutes"),
             func.count(DutyLog.id).label("sessions"),
@@ -148,6 +149,12 @@ async def get_overview(
         .order_by(func.sum(DutyLog.duration_minutes).desc())
         .limit(5)
     )
+    top5_rows = list(top5.all())
+
+    # Batch resolve Discord avatars cho top5
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _top5_uids = {r.user_id for r in top5_rows if r.user_id}
+    _top5_info = await batch_resolve_user_info(_top5_uids) if _top5_uids else {}
 
     return {
         "total_sessions": row.total_sessions,
@@ -156,7 +163,9 @@ async def get_overview(
         "total_hhmm": minutes_to_hhmm(row.total_minutes),
         "top5": [
             {
+                "user_id": str(r.user_id) if r.user_id else None,
                 "username": r.username,
+                "avatar_url": (_top5_info.get(r.user_id) or {}).get("avatar_url"),
                 "total_minutes": r.total_minutes,
                 "total_hhmm": minutes_to_hhmm(r.total_minutes),
                 "sessions": r.sessions,
@@ -338,6 +347,22 @@ async def get_attendance_dashboard(
     total_sessions = sum(it["session_count"] for it in items)
     total_minutes = sum(it["total_minutes"] for it in items)
     active_members = sum(1 for it in items if it["session_count"] > 0)
+
+    # Batch resolve Discord avatars cho mọi user trong attendance
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _att_uids: set[int] = set()
+    for it in items:
+        try:
+            _att_uids.add(int(it["user_id"]))
+        except (TypeError, ValueError):
+            pass
+    _att_info = await batch_resolve_user_info(_att_uids) if _att_uids else {}
+    for it in items:
+        try:
+            uid_int = int(it["user_id"])
+            it["avatar_url"] = (_att_info.get(uid_int) or {}).get("avatar_url")
+        except (TypeError, ValueError):
+            it["avatar_url"] = None
 
     return {
         "is_mod_view": is_mod,
@@ -640,19 +665,27 @@ async def get_ranking(
         .limit(page_size)
     )
 
+    rows = list(result.all())
+
+    # Batch resolve Discord avatars cho tất cả user trong ranking
+    from web.utils.discord_resolver import batch_resolve_user_info
+    user_ids = {r.user_id for r in rows if r.user_id}
+    info_map = await batch_resolve_user_info(user_ids) if user_ids else {}
+
     return {
         "page": page,
         "page_size": page_size,
         "items": [
             {
                 "rank": offset + i + 1,
-                "user_id": r.user_id,
+                "user_id": str(r.user_id) if r.user_id else None,
                 "username": r.username,
+                "avatar_url": (info_map.get(r.user_id) or {}).get("avatar_url"),
                 "total_minutes": r.total_minutes,
                 "total_hhmm": minutes_to_hhmm(r.total_minutes),
                 "sessions": r.sessions,
             }
-            for i, r in enumerate(result.all())
+            for i, r in enumerate(rows)
         ],
     }
 
@@ -775,7 +808,12 @@ async def list_logs(
     rows = await session.execute(
         base_q.order_by(DutyLog.started_at.desc()).offset(offset).limit(page_size)
     )
-    logs = rows.scalars().all()
+    logs = list(rows.scalars().all())
+
+    # Batch resolve avatars cho duty logs
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _log_uids = {log.user_id for log in logs if log.user_id}
+    _log_info = await batch_resolve_user_info(_log_uids) if _log_uids else {}
 
     return {
         "total": total,
@@ -786,6 +824,7 @@ async def list_logs(
                 "id": log.id,
                 "user_id": log.user_id,
                 "username": log.username,
+                "avatar_url": (_log_info.get(log.user_id) or {}).get("avatar_url"),
                 "started_at": log.started_at.isoformat() if log.started_at else None,
                 "ended_at": log.ended_at.isoformat() if log.ended_at else None,
                 "duration_minutes": log.duration_minutes,
@@ -805,14 +844,21 @@ async def delete_log(
     request: Request,
     log_id: int = Path(..., gt=0),
     guild_id: int = Query(...),
+    note: str = Query(..., min_length=3, description="Lý do xoá (BẮT BUỘC, ≥3 ký tự)"),
     session: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
     """
     Xóa 1 duty log. Quyền: CHỈ DUTY_ADMIN (không có ngoại lệ — kể cả MOD và chủ log).
-    Ghi audit log với chi tiết entry bị xóa.
+    Audit policy nghiêm ngặt: MỌI lệnh xoá đều phải kèm lý do.
     """
     user_id = int(current_user["sub"])
+    note_clean = (note or "").strip()
+    if len(note_clean) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Xoá log phải ghi LÝ DO (tối thiểu 3 ký tự, query param 'note').",
+        )
 
     # Quyền ADMIN check TRƯỚC khi query — fail fast
     await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
@@ -828,7 +874,7 @@ async def delete_log(
     # Snapshot trước khi xóa để ghi audit
     snapshot = {
         "log_id": log.id,
-        "for_user_id": log.user_id,
+        "for_user": str(log.user_id),
         "for_username": log.username,
         "started_at": log.started_at.isoformat() if log.started_at else None,
         "ended_at": log.ended_at.isoformat() if log.ended_at else None,
@@ -839,16 +885,144 @@ async def delete_log(
     # Xóa
     await session.execute(delete(DutyLog).where(DutyLog.id == log_id))
 
-    # Audit log — username người thực hiện lấy từ JWT (sub) — không lưu trong JWT, ta dùng "web_user"
     session.add(AuditLog(
         guild_id=guild_id,
         user_id=user_id,
         username=current_user.get("username", f"user_{user_id}"),
         action=AuditAction.LOG_DELETED,
-        detail=snapshot,
+        detail={**snapshot, "note": note_clean, "via": "web"},
         ip_address=request.client.host if request.client else None,
         created_at=utcnow(),
     ))
     await session.commit()
 
     return {"success": True, "deleted_id": log_id}
+
+
+# ─── Notification Settings ────────────────────────────────────────────────────
+
+DEFAULT_NOTIFY = {
+    "remind_register_shift": True,
+    "remind_before_shift": True,
+    "alert_late": True,
+    "alert_burnout": True,
+    "daily_digest": False,
+}
+
+
+@router.get("/notification-settings")
+@limiter.limit("30/minute")
+async def get_notification_settings(
+    request: Request,
+    guild_id: int = Query(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Lấy cấu hình bật/tắt các loại nhắc nhở. Mod+ xem được."""
+    await require_guild_role(guild_id, "DUTY_MOD", current_user, session)
+    row = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == guild_id))
+    config = row.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Guild chưa setup")
+    settings_obj = {**DEFAULT_NOTIFY, **(config.notification_settings or {})}
+    return {"notification_settings": settings_obj}
+
+
+@router.put("/notification-settings")
+@limiter.limit("10/minute")
+async def update_notification_settings(
+    request: Request,
+    guild_id: int = Query(...),
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Cập nhật cấu hình thông báo (Admin). Body:
+      {"settings": {...}, "note": "Lý do (≥3 chars)"}
+    """
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+    note = (body.get("note") or "").strip()
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Bắt buộc lý do thay đổi (≥3 ký tự).")
+
+    new_settings = body.get("settings") or {}
+    if not isinstance(new_settings, dict):
+        raise HTTPException(status_code=400, detail="Field 'settings' phải là object.")
+
+    # Validate keys: chỉ accept các key trong DEFAULT_NOTIFY
+    clean: dict[str, bool] = {}
+    for k, v in new_settings.items():
+        if k in DEFAULT_NOTIFY:
+            clean[k] = bool(v)
+
+    row = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == guild_id))
+    config = row.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Guild chưa setup")
+
+    before = {**DEFAULT_NOTIFY, **(config.notification_settings or {})}
+    merged = {**before, **clean}
+    config.notification_settings = merged
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=int(current_user["sub"]),
+        username=current_user.get("username", f"user_{current_user['sub']}"),
+        action="NOTIFICATION_SETTINGS_CHANGED",
+        detail={
+            "before": before,
+            "after": merged,
+            "note": note,
+            "via": "web",
+        },
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {"success": True, "notification_settings": merged}
+
+
+# ─── Batch Resolve Discord User Info ──────────────────────────────────────────
+
+@router.post("/resolve-users")
+@limiter.limit("60/minute")
+async def resolve_users(
+    request: Request,
+    body: dict = Body(...),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Batch resolve Discord user info (avatar + username) cho nhiều user_id.
+
+    Body: {"user_ids": ["1119880453671899196", "833685979147534416", ...]}
+    Return: {"results": {"id1": {"username", "global_name", "avatar_url"}, ...}}
+
+    Backend cache 10 phút (xem discord_resolver.py). Frontend dùng để hiển thị
+    avatar thật cho user_id không nằm trong Staff list (VD: từ duty log, ranking).
+    """
+    user_ids_raw = body.get("user_ids") or []
+    if not isinstance(user_ids_raw, list):
+        raise HTTPException(status_code=400, detail="user_ids phải là list of strings.")
+    # Limit tối đa 100 IDs/request để tránh abuse
+    if len(user_ids_raw) > 100:
+        raise HTTPException(status_code=400, detail="Tối đa 100 user_id/request.")
+
+    valid_ids: set[int] = set()
+    for x in user_ids_raw:
+        try:
+            n = int(x)
+            if 10**14 <= n < 10**20:    # Discord snowflake range
+                valid_ids.add(n)
+        except (TypeError, ValueError):
+            continue
+
+    if not valid_ids:
+        return {"results": {}}
+
+    from web.utils.discord_resolver import batch_resolve_user_info
+    info_map = await batch_resolve_user_info(valid_ids)
+
+    return {
+        "results": {str(uid): info for uid, info in info_map.items() if info},
+    }

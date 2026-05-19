@@ -40,6 +40,12 @@ class AuditAction:
     ONBOARDING_REMINDED = "ONBOARDING_REMINDED"
     DISCIPLINE = "DISCIPLINE"        # /kyluat (cảnh cáo / khiển trách / phạt)
     DISMISSED = "DISMISSED"          # /sathai (sa thải ngay)
+    # Staff position management
+    STAFF_ADDED = "STAFF_ADDED"          # Thêm nhân sự vào hệ thống
+    STAFF_UPDATED = "STAFF_UPDATED"      # Đổi chức vụ/khoa/note
+    STAFF_REMOVED = "STAFF_REMOVED"      # Gỡ khỏi danh sách (deactivate)
+    STAFF_ROLE_SYNCED = "STAFF_ROLE_SYNCED"  # Auto-sync Discord role theo chức vụ
+    POSITION_ROLE_MAP_CHANGED = "POSITION_ROLE_MAP_CHANGED"  # Admin đổi config map
 
 
 class AuditLog(Base):
