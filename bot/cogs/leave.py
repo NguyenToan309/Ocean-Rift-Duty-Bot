@@ -315,7 +315,21 @@ class LeaveCog(commands.Cog):
                 select(LeaveRequest).where(LeaveRequest.vote_message_id == payload.message_id)
             )
             req = row.scalar_one_or_none()
-            if req is None or req.status != LeaveRequestStatus.PENDING:
+            if req is None:
+                return
+            if req.status != LeaveRequestStatus.PENDING:
+                # Đơn đã quyết định — remove react thừa để embed gọn gàng
+                try:
+                    guild = self.bot.get_guild(payload.guild_id)
+                    if guild:
+                        channel = guild.get_channel(payload.channel_id)
+                        if channel:
+                            msg = await channel.fetch_message(payload.message_id)
+                            user = guild.get_member(payload.user_id)
+                            if user:
+                                await msg.remove_reaction(payload.emoji, user)
+                except discord.HTTPException:
+                    pass
                 return
 
             # Verify ai react là Admin/Mod

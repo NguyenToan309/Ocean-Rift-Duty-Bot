@@ -741,6 +741,11 @@ async def backfill_scan_guild(
             if msg.id in existing_msg_ids:
                 stats["dup"] += 1
                 continue
+            # Skip nếu message đã có react ⏪ của bot — đã backfill rồi nhưng có thể chưa
+            # vào existing_msg_ids do race. Tránh re-add react trùng.
+            if any(str(r.emoji) == "⏪" and r.me for r in msg.reactions):
+                stats["dup"] += 1
+                continue
 
             candidates = LogDutyCog._extract_message_text(msg)
             if not candidates:
@@ -801,6 +806,13 @@ async def backfill_scan_guild(
                     stats["saved"] += 1
                     # Cập nhật existing set để các iteration sau không trùng
                     existing_msg_ids.add(msg.id)
+                    # Visual feedback: ⏪ = bot backfill, ✅ = save thành công.
+                    # User nhìn channel chấm-công sẽ biết bot đã quét bù lúc offline.
+                    try:
+                        await msg.add_reaction("⏪")
+                        await msg.add_reaction("✅")
+                    except discord.HTTPException:
+                        pass  # Mất quyền add_reaction không nên fail backfill
                 except Exception as e:
                     await save_session.rollback()
                     # Lỗi save thường do duplicate Layer 2 (cùng user + thời gian)

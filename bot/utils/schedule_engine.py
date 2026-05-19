@@ -229,6 +229,10 @@ async def is_user_on_leave(
 
     NOTE: User có thể có NHIỀU đơn approved overlap (VD nghỉ phép + nghỉ ốm
     cùng ngày, hoặc đơn cũ + đơn revert+resubmit). Dùng .first() tránh crash.
+
+    PERFORMANCE: Mỗi call = 1 query. Khi check nhiều user × nhiều ngày trong
+    cùng flow (compliance report), DÙNG `prefetch_leaves_map` + `is_on_leave_in_map`
+    để giảm N×M query xuống 1.
     """
     rows = await session.execute(
         select(LeaveRequest.id)
@@ -243,6 +247,49 @@ async def is_user_on_leave(
         .limit(1)
     )
     return rows.first() is not None
+
+
+async def prefetch_leaves_map(
+    session: AsyncSession,
+    guild_id: int,
+    range_start_date: date,
+    range_end_date: date,
+    user_id: int | None = None,
+) -> dict[int, list[tuple[date, date | None]]]:
+    """
+    Lấy 1 lần tất cả LeaveRequest APPROVED của guild overlap với khoảng
+    [range_start_date, range_end_date], trả về dict {user_id: [(start, end), ...]}.
+    `end=None` nghĩa là RESIGN (vĩnh viễn từ start trở đi).
+    """
+    q = (
+        select(LeaveRequest.user_id, LeaveRequest.start_date, LeaveRequest.end_date)
+        .where(LeaveRequest.guild_id == guild_id)
+        .where(LeaveRequest.status == LeaveRequestStatus.APPROVED)
+        .where(LeaveRequest.start_date <= range_end_date)
+        .where(or_(
+            LeaveRequest.end_date == None,  # noqa: E711
+            LeaveRequest.end_date >= range_start_date,
+        ))
+    )
+    if user_id is not None:
+        q = q.where(LeaveRequest.user_id == user_id)
+    rows = await session.execute(q)
+    out: dict[int, list[tuple[date, date | None]]] = {}
+    for uid, sd, ed in rows.all():
+        out.setdefault(uid, []).append((sd, ed))
+    return out
+
+
+def is_on_leave_in_map(
+    leaves_map: dict[int, list[tuple[date, date | None]]],
+    user_id: int,
+    check_date: date,
+) -> bool:
+    """In-memory check (không hit DB) bằng map đã prefetch."""
+    for sd, ed in leaves_map.get(user_id, ()):
+        if sd <= check_date and (ed is None or ed >= check_date):
+            return True
+    return False
 
 
 async def compute_compliance(
@@ -303,13 +350,18 @@ async def compute_compliance(
 
     out: list[ComplianceEntry] = []
 
+    # Prefetch leaves 1 lần để tránh N×M query trong loop bên dưới
+    leaves_map = await prefetch_leaves_map(
+        session, guild_id, start_local, end_local, user_id,
+    )
+
     # 1. Process occurrences
     for occ in occurrences:
         uid = occ.schedule.user_id
         username = name_cache.get(uid, f"User#{uid}")
 
-        # Check on leave
-        if await is_user_on_leave(session, guild_id, uid, occ.occurrence_date):
+        # Check on leave (in-memory, không hit DB)
+        if is_on_leave_in_map(leaves_map, uid, occ.occurrence_date):
             out.append(ComplianceEntry(
                 user_id=uid, username=username,
                 schedule=occ.schedule, occurrence_date=occ.occurrence_date,
