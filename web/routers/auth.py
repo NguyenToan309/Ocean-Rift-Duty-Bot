@@ -377,7 +377,12 @@ async def logout(request: Request, session: AsyncSession = Depends(get_db)):
         if not token:
             continue
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+            # verify_exp=False để vẫn blacklist được token đã hết hạn — bảo vệ
+            # trường hợp clock skew hoặc user logout đúng lúc token vừa expire.
+            payload = jwt.decode(
+                token, settings.SECRET_KEY, algorithms=[ALGORITHM],
+                options={"verify_exp": False},
+            )
             jti = payload.get("jti")
             exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
             if jti:

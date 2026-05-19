@@ -956,9 +956,20 @@ async def _send_panel(
         await interaction.response.send_message(embed=embed, view=view)
 
 
-def _check_pin_permission(interaction: discord.Interaction) -> bool:
-    """Check user has Manage Messages permission."""
-    return interaction.user.guild_permissions.manage_messages
+async def _check_pin_permission(interaction: discord.Interaction) -> bool:
+    """
+    Cho phép pin panel khi:
+      - User có Discord native `manage_messages`, HOẶC
+      - User là DUTY_ADMIN trong hierarchy bot.
+    Lý do: DUTY_ADMIN cần pin được panel kể cả khi Discord role không có
+    `manage_messages`; ngược lại các channel mod cũ vẫn pin được mà không
+    phải nâng cấp lên DUTY_ADMIN.
+    """
+    if interaction.user.guild_permissions.manage_messages:
+        return True
+    from bot.utils.permissions import require_admin
+    async with AsyncSessionLocal() as session:
+        return await require_admin(interaction, session)
 
 
 class ControlPanelCog(commands.Cog):
@@ -969,7 +980,7 @@ class ControlPanelCog(commands.Cog):
     @app_commands.command(name="panel", description="📊 Panel tổng quan — stats + top + period")
     @app_commands.describe(pin="Pin panel vào channel (cần Manage Messages)")
     async def panel(self, interaction: discord.Interaction, pin: bool = False):
-        if pin and not _check_pin_permission(interaction):
+        if pin and not await _check_pin_permission(interaction):
             await interaction.response.send_message(
                 embed=build_error_embed("Cần permission `Manage Messages` để pin."), ephemeral=True,
             )
@@ -981,7 +992,7 @@ class ControlPanelCog(commands.Cog):
     @app_commands.command(name="panel-duty", description="✍️ Panel chấm công — hướng dẫn + log gần nhất + top")
     @app_commands.describe(pin="Pin panel vào channel chấm công (cần Manage Messages)")
     async def panel_duty(self, interaction: discord.Interaction, pin: bool = False):
-        if pin and not _check_pin_permission(interaction):
+        if pin and not await _check_pin_permission(interaction):
             await interaction.response.send_message(
                 embed=build_error_embed("Cần permission `Manage Messages` để pin."), ephemeral=True,
             )
@@ -993,7 +1004,7 @@ class ControlPanelCog(commands.Cog):
     @app_commands.command(name="panel-leave", description="📤 Panel xin nghỉ phép — modal + danh sách đơn")
     @app_commands.describe(pin="Pin panel vào channel xin nghỉ (cần Manage Messages)")
     async def panel_leave(self, interaction: discord.Interaction, pin: bool = False):
-        if pin and not _check_pin_permission(interaction):
+        if pin and not await _check_pin_permission(interaction):
             await interaction.response.send_message(
                 embed=build_error_embed("Cần permission `Manage Messages` để pin."), ephemeral=True,
             )
@@ -1005,7 +1016,7 @@ class ControlPanelCog(commands.Cog):
     @app_commands.command(name="panel-resign", description="⚠️ Panel xin out ngành — cảnh báo + modal nghiêm túc")
     @app_commands.describe(pin="Pin panel vào channel HR/staff (cần Manage Messages)")
     async def panel_resign(self, interaction: discord.Interaction, pin: bool = False):
-        if pin and not _check_pin_permission(interaction):
+        if pin and not await _check_pin_permission(interaction):
             await interaction.response.send_message(
                 embed=build_error_embed("Cần permission `Manage Messages` để pin."), ephemeral=True,
             )
@@ -1017,7 +1028,7 @@ class ControlPanelCog(commands.Cog):
     @app_commands.command(name="panel-schedule", description="📅 Panel lịch trực — xem lịch + đăng ký + tuân thủ")
     @app_commands.describe(pin="Pin panel vào channel lịch trực (cần Manage Messages)")
     async def panel_schedule(self, interaction: discord.Interaction, pin: bool = False):
-        if pin and not _check_pin_permission(interaction):
+        if pin and not await _check_pin_permission(interaction):
             await interaction.response.send_message(
                 embed=build_error_embed("Cần permission `Manage Messages` để pin."), ephemeral=True,
             )

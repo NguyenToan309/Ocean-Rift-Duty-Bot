@@ -119,7 +119,9 @@ async def fetch_member_role_ids(guild_id: int, user_id: int) -> list[int] | None
     if cached != "miss":
         return cached  # Có thể là list hoặc None (cached error)
 
-    # Slow path: lock per-key để tránh thundering herd
+    # Slow path: lock per-key để tránh thundering herd.
+    # HTTP call PHẢI nằm TRONG `async with lock:` — nếu thoát lock trước khi fetch,
+    # các request đồng thời cùng key đều thấy cache miss và đều hit Discord API.
     key = f"{guild_id}:{user_id}"
     lock = await _get_role_lock(key)
     async with lock:
@@ -128,45 +130,45 @@ async def fetch_member_role_ids(guild_id: int, user_id: int) -> list[int] | None
         if cached != "miss":
             return cached
 
-    headers = {"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
-    url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=headers)
+        headers = {"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
+        url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=headers)
 
-        if resp.status_code == 404:
-            # User không phải member guild — cache []
-            _set_cached_roles(guild_id, user_id, [])
-            return []
+            if resp.status_code == 404:
+                # User không phải member guild — cache []
+                _set_cached_roles(guild_id, user_id, [])
+                return []
 
-        if resp.status_code == 401:
-            logger.error("Discord API 401 — bot token sai hoặc bị revoke!")
-            _set_cached_roles(guild_id, user_id, None)
+            if resp.status_code == 401:
+                logger.error("Discord API 401 — bot token sai hoặc bị revoke!")
+                _set_cached_roles(guild_id, user_id, None)
+                return None
+
+            if resp.status_code == 429:
+                logger.warning(f"Discord API rate limit cho {user_id}@{guild_id}")
+                # Không cache rate-limit (retry sẽ thành công)
+                return None
+
+            if resp.status_code != 200:
+                logger.warning(
+                    f"Discord API trả {resp.status_code} cho member {user_id}@{guild_id}: "
+                    f"{resp.text[:200]}"
+                )
+                _set_cached_roles(guild_id, user_id, None)
+                return None
+
+            roles = [int(r) for r in resp.json().get("roles", [])]
+            _set_cached_roles(guild_id, user_id, roles)
+            return roles
+
+        except httpx.TimeoutException:
+            logger.warning(f"Discord API timeout khi fetch roles {user_id}@{guild_id}")
             return None
-
-        if resp.status_code == 429:
-            logger.warning(f"Discord API rate limit cho {user_id}@{guild_id}")
-            # Không cache rate-limit (retry sẽ thành công)
+        except Exception as e:
+            logger.error(f"Lỗi fetch_member_role_ids({guild_id}, {user_id}): {type(e).__name__}: {e}")
             return None
-
-        if resp.status_code != 200:
-            logger.warning(
-                f"Discord API trả {resp.status_code} cho member {user_id}@{guild_id}: "
-                f"{resp.text[:200]}"
-            )
-            _set_cached_roles(guild_id, user_id, None)
-            return None
-
-        roles = [int(r) for r in resp.json().get("roles", [])]
-        _set_cached_roles(guild_id, user_id, roles)
-        return roles
-
-    except httpx.TimeoutException:
-        logger.warning(f"Discord API timeout khi fetch roles {user_id}@{guild_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Lỗi fetch_member_role_ids({guild_id}, {user_id}): {type(e).__name__}: {e}")
-        return None
 
 
 def invalidate_role_cache(guild_id: int, user_id: int) -> None:

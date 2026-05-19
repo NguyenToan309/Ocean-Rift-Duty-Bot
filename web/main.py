@@ -64,11 +64,24 @@ _ALLOWED_ORIGINS_SET = {o.rstrip("/") for o in _cors_origins}
 
 @app.middleware("http")
 async def csrf_origin_guard(request: Request, call_next):
-    """Reject mutation requests có Origin không thuộc whitelist."""
+    """Reject mutation requests có Origin không thuộc whitelist.
+
+    Production: Origin TRỐNG hoặc Origin SAI đều bị reject. Browser luôn gửi
+    Origin trên non-GET requests (trừ một số corner case như link prefetch);
+    request không có Origin trong prod là dấu hiệu CSRF/script lạ.
+
+    DEBUG: cho phép Origin trống để dev dùng curl/httpie/server-to-server.
+    """
     if request.method not in _SAFE_METHODS:
         origin = request.headers.get("origin", "").rstrip("/")
-        # Cho phép request không có Origin (curl, server-to-server) chỉ trong DEBUG
-        if origin and origin not in _ALLOWED_ORIGINS_SET:
+        if not origin:
+            if not settings.DEBUG:
+                logger.warning(f"CSRF: blocked {request.method} {request.url.path} (no Origin header)")
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Thiếu Origin header", "detail": "CSRF protection"},
+                )
+        elif origin not in _ALLOWED_ORIGINS_SET:
             logger.warning(f"CSRF: blocked {request.method} {request.url.path} from origin={origin}")
             return JSONResponse(
                 status_code=403,
