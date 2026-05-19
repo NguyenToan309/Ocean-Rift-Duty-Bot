@@ -1,8 +1,8 @@
-﻿"""
-log_duty.py â€” Cog xá»­ lÃ½ /log upload, /log forward, /log view, /log delete
-Luá»“ng upload: nháº­n áº£nh â†’ OCR â†’ parse â†’ validate â†’ confirm â†’ lÆ°u DB
-Luá»“ng forward: nháº­n text â†’ parse â†’ validate â†’ confirm â†’ lÆ°u DB
-Auto-scan: on_message tá»± Ä‘á»™ng parse LOG DUTY trong log_channel
+"""
+log_duty.py — Cog xử lý /log upload, /log forward, /log view, /log delete
+Luồng upload: nhận ảnh → OCR → parse → validate → confirm → lưu DB
+Luồng forward: nhận text → parse → validate → confirm → lưu DB
+Auto-scan: on_message tự động parse LOG DUTY trong log_channel
 """
 import logging
 import io
@@ -24,7 +24,7 @@ from bot.utils.parser import parse_duty_text
 from bot.utils.permissions import require_member, require_mod, require_admin, send_no_permission, DutyRole
 from bot.utils.embed_builder import (
     build_log_confirm_embed, build_log_view_embed, build_all_logs_table_embed,
-    build_error_embed, build_success_embed, build_info_embed,
+    build_error_embed, build_success_embed,
     build_log_accepted_embed, build_log_rejected_embed,
     build_log_invalid_embed, build_log_name_mismatch_embed,
     build_log_duplicate_embed,
@@ -38,7 +38,7 @@ PAGE_SIZE = 10
 
 
 class ConfirmLogView(discord.ui.View):
-    """NÃºt XÃ¡c nháº­n / Huá»· khi upload log. Timeout 60 giÃ¢y."""
+    """Nút Xác nhận / Huỷ khi upload log. Timeout 60 giây."""
 
     def __init__(self, parsed_data: dict, submitter_id: int, guild_id: int):
         super().__init__(timeout=60)
@@ -49,28 +49,28 @@ class ConfirmLogView(discord.ui.View):
         self._message: discord.WebhookMessage | None = None  # set sau followup.send
 
     def set_message(self, msg: discord.WebhookMessage) -> None:
-        """LÆ°u reference Ä‘áº¿n message Ä‘á»ƒ on_timeout cÃ³ thá»ƒ edit"""
+        """Lưu reference đến message để on_timeout có thể edit"""
         self._message = msg
 
     async def on_timeout(self) -> None:
-        """Disable táº¥t cáº£ nÃºt vÃ  thÃ´ng bÃ¡o háº¿t giá» khi view timeout"""
+        """Disable tất cả nút và thông báo hết giờ khi view timeout"""
         for child in self.children:
             child.disabled = True
         if self._message:
             try:
                 await self._message.edit(
-                    content="â° Háº¿t thá»i gian xÃ¡c nháº­n (60 giÃ¢y). HÃ£y cháº¡y láº¡i lá»‡nh náº¿u muá»‘n lÆ°u.",
+                    content="⏰ Hết thời gian xác nhận (60 giây). Hãy chạy lại lệnh nếu muốn lưu.",
                     view=self,
                 )
             except discord.HTTPException:
                 pass
 
-    @discord.ui.button(label="âœ… XÃ¡c nháº­n lÆ°u", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Xác nhận lưu", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Chá»‰ ngÆ°á»i upload má»›i Ä‘Æ°á»£c xÃ¡c nháº­n
+        # Chỉ người upload mới được xác nhận
         if interaction.user.id != self.submitter_id:
             await interaction.response.send_message(
-                "Chá»‰ ngÆ°á»i upload má»›i Ä‘Æ°á»£c xÃ¡c nháº­n log nÃ y.", ephemeral=True
+                "Chỉ người upload mới được xác nhận log này.", ephemeral=True
             )
             return
 
@@ -113,7 +113,7 @@ class ConfirmLogView(discord.ui.View):
                 await interaction.followup.send(
                     embed=build_error_embed(str(e)), ephemeral=True
                 )
-                # Disable nÃºt sau khi lá»—i Ä‘á»ƒ khÃ´ng submit láº¡i
+                # Disable nút sau khi lỗi để không submit lại
                 for child in self.children:
                     child.disabled = True
                 try:
@@ -124,14 +124,14 @@ class ConfirmLogView(discord.ui.View):
                 return
 
             except IntegrityError as e:
-                # DB-level uq_duty_log_entry vi pháº¡m â†’ race condition Layer 2
-                # (2 user submit cÃ¹ng ca trá»±c Ä‘á»“ng thá»i). Hiá»ƒn thá»‹ message thÃ¢n thiá»‡n.
+                # DB-level uq_duty_log_entry vi phạm → race condition Layer 2
+                # (2 user submit cùng ca trực đồng thời). Hiển thị message thân thiện.
                 await session.rollback()
                 logger.info(f"Race condition duplicate caught at DB level: {e.orig}")
                 await interaction.followup.send(
                     embed=build_error_embed(
-                        "Ca trá»±c nÃ y vá»«a Ä‘Æ°á»£c lÆ°u (cÃ³ thá»ƒ báº¡n nháº¥n 2 láº§n hoáº·c submit trÃ¹ng).\n"
-                        "Vui lÃ²ng kiá»ƒm tra láº¡i vá»›i `/log view`."
+                        "Ca trực này vừa được lưu (có thể bạn nhấn 2 lần hoặc submit trùng).\n"
+                        "Vui lòng kiểm tra lại với `/log view`."
                     ),
                     ephemeral=True,
                 )
@@ -146,9 +146,9 @@ class ConfirmLogView(discord.ui.View):
 
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Lá»—i lÆ°u duty log: {e}", exc_info=True)
+                logger.error(f"Lỗi lưu duty log: {e}", exc_info=True)
                 await interaction.followup.send(
-                    embed=build_error_embed("LÆ°u tháº¥t báº¡i do lá»—i há»‡ thá»‘ng. Thá»­ láº¡i sau."),
+                    embed=build_error_embed("Lưu thất bại do lỗi hệ thống. Thử lại sau."),
                     ephemeral=True,
                 )
                 for child in self.children:
@@ -161,8 +161,8 @@ class ConfirmLogView(discord.ui.View):
                 return
 
         embed = build_success_embed(
-            f"ÄÃ£ lÆ°u log trá»±c cho **{self.parsed_data['username']}**!\n"
-            f"â± {self.parsed_data['duration_minutes']} phÃºt"
+            f"Đã lưu log trực cho **{self.parsed_data['username']}**!\n"
+            f"⏱ {self.parsed_data['duration_minutes']} phút"
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -174,13 +174,13 @@ class ConfirmLogView(discord.ui.View):
             pass
         self.stop()
 
-    @discord.ui.button(label="âŒ Huá»·", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Huỷ", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.submitter_id:
-            await interaction.response.send_message("KhÃ´ng pháº£i log cá»§a báº¡n.", ephemeral=True)
+            await interaction.response.send_message("Không phải log của bạn.", ephemeral=True)
             return
 
-        await interaction.response.send_message("ÄÃ£ huá»· lÆ°u log.", ephemeral=True)
+        await interaction.response.send_message("Đã huỷ lưu log.", ephemeral=True)
         for child in self.children:
             child.disabled = True
         try:
@@ -204,33 +204,33 @@ async def _save_duty_log(
     submitted_by: int,
 ) -> DutyLog:
     """
-    LÆ°u DutyLog vÃ o DB vá»›i 3 táº§ng báº£o vá»‡:
+    Lưu DutyLog vào DB với 3 tầng bảo vệ:
 
-    Táº§ng 0 â€” Kiá»ƒm tra tÆ°Æ¡ng lai:
-        Ca trá»±c khÃ´ng Ä‘Æ°á»£c báº¯t Ä‘áº§u > 30 phÃºt trong tÆ°Æ¡ng lai.
-        Cho phÃ©p báº¥t ká»³ ngÃ y nÃ o trong quÃ¡ khá»©.
+    Tầng 0 — Kiểm tra tương lai:
+        Ca trực không được bắt đầu > 30 phút trong tương lai.
+        Cho phép bất kỳ ngày nào trong quá khứ.
 
-    Táº§ng 1 â€” source_message_id (auto-scan / Discord forward):
-        Cháº·n cÃ¹ng message Discord Ä‘Æ°á»£c scan 2 láº§n.
+    Tầng 1 — source_message_id (auto-scan / Discord forward):
+        Chặn cùng message Discord được scan 2 lần.
 
-    Táº§ng 2 â€” (guild_id, user_id, started_at, ended_at) exact duplicate:
-        Cháº·n cÃ¹ng ca trá»±c Ä‘Æ°á»£c submit láº¡i dÆ°á»›i dáº¡ng text/áº£nh khÃ¡c nhau.
-        DB constraint uq_duty_log_entry lÃ  backup phÃ²ng race condition.
+    Tầng 2 — (guild_id, user_id, started_at, ended_at) exact duplicate:
+        Chặn cùng ca trực được submit lại dưới dạng text/ảnh khác nhau.
+        DB constraint uq_duty_log_entry là backup phòng race condition.
 
-    Táº§ng 3 â€” Overlap check:
-        Cháº·n ca trá»±c má»›i chá»“ng láº¥p thá»i gian vá»›i ca trá»±c Ä‘Ã£ tá»“n táº¡i cá»§a cÃ¹ng user.
-        VÃ­ dá»¥: Ä‘Ã£ cÃ³ 08:00-12:00, khÃ´ng thá»ƒ thÃªm 10:00-14:00.
-        Cho phÃ©p ca liÃªn tiáº¿p (káº¿t thÃºc = báº¯t Ä‘áº§u ca tiáº¿p).
+    Tầng 3 — Overlap check:
+        Chặn ca trực mới chồng lấp thời gian với ca trực đã tồn tại của cùng user.
+        Ví dụ: đã có 08:00-12:00, không thể thêm 10:00-14:00.
+        Cho phép ca liên tiếp (kết thúc = bắt đầu ca tiếp).
     """
     now = utcnow()
 
-    # â”€â”€ Táº§ng -1: Username lock â€” chá»‘ng impersonation triá»‡t Ä‘á»ƒ â”€â”€
-    # Má»—i `username` (sau normalize) trong 1 guild chá»‰ Ä‘Æ°á»£c thuá»™c vá» 1 user_id duy nháº¥t.
-    # User Ä‘áº§u tiÃªn submit log vá»›i tÃªn X â†’ tÃªn X locked vÃ o user_id Ä‘Ã³ forever.
-    # User khÃ¡c cá»‘ gáº¯ng dÃ¹ng tÃªn X â†’ REJECT.
+    # ── Tầng -1: Username lock — chống impersonation triệt để ──
+    # Mỗi `username` (sau normalize) trong 1 guild chỉ được thuộc về 1 user_id duy nhất.
+    # User đầu tiên submit log với tên X → tên X locked vào user_id đó forever.
+    # User khác cố gắng dùng tên X → REJECT.
     #
-    # ÄÃ¢y lÃ  phÃ²ng tuyáº¿n cuá»‘i: ngay cáº£ khi attacker bypass identity check
-    # (Ä‘á»•i nick thÃ nh tÃªn victim), DB sáº½ cháº·n vÃ¬ username Ä‘Ã£ cÃ³ owner khÃ¡c.
+    # Đây là phòng tuyến cuối: ngay cả khi attacker bypass identity check
+    # (đổi nick thành tên victim), DB sẽ chặn vì username đã có owner khác.
     parsed_lower = username.strip().lower()
     if parsed_lower:
         existing_owner = await session.execute(
@@ -243,40 +243,40 @@ async def _save_duty_log(
         first_owner_id = existing_owner.scalar_one_or_none()
         if first_owner_id is not None and first_owner_id != user_id:
             logger.warning(
-                f"[username-lock] User {user_id} cá»‘ gáº¯ng dÃ¹ng tÃªn '{username}' "
-                f"Ä‘Ã£ thuá»™c vá» user {first_owner_id} (lÆ°u trÆ°á»›c Ä‘Ã³)"
+                f"[username-lock] User {user_id} cố gắng dùng tên '{username}' "
+                f"đã thuộc về user {first_owner_id} (lưu trước đó)"
             )
             raise ValueError(
-                f"TÃªn **{username}** Ä‘Ã£ Ä‘Æ°á»£c dÃ¹ng bá»Ÿi tÃ i khoáº£n khÃ¡c trÆ°á»›c Ä‘Ã¢y. "
-                "Báº¡n khÃ´ng thá»ƒ cháº¥m cÃ´ng vá»›i tÃªn nÃ y.\n\n"
-                "Náº¿u Ä‘Ã¢y lÃ  tÃªn tháº­t cá»§a báº¡n (cÃ³ user khÃ¡c Ä‘Ã£ chiáº¿m trÆ°á»›c), "
-                "**vui lÃ²ng liÃªn há»‡ ban lÃ£nh Ä‘áº¡o** Ä‘á»ƒ xá»­ lÃ½."
+                f"Tên **{username}** đã được dùng bởi tài khoản khác trước đây. "
+                "Bạn không thể chấm công với tên này.\n\n"
+                "Nếu đây là tên thật của bạn (có user khác đã chiếm trước), "
+                "**vui lòng liên hệ ban lãnh đạo** để xử lý."
             )
 
-    # â”€â”€ Táº§ng 0: KhÃ´ng cho phÃ©p ca trá»±c á»Ÿ tÆ°Æ¡ng lai â”€â”€
+    # ── Tầng 0: Không cho phép ca trực ở tương lai ──
     if started_at > now + timedelta(minutes=30):
         raise ValueError(
-            f"KhÃ´ng thá»ƒ log ca trá»±c chÆ°a báº¯t Ä‘áº§u.\n"
-            f"Giá» báº¯t Ä‘áº§u trong log: **{started_at.strftime('%H:%M %d/%m/%Y')} UTC**\n"
-            f"Thá»i gian hiá»‡n táº¡i: **{now.strftime('%H:%M %d/%m/%Y')} UTC**\n"
-            "â†’ Chá»‰ Ä‘Æ°á»£c log ca trá»±c Ä‘Ã£ hoáº·c Ä‘ang diá»…n ra."
+            f"Không thể log ca trực chưa bắt đầu.\n"
+            f"Giờ bắt đầu trong log: **{started_at.strftime('%H:%M %d/%m/%Y')} UTC**\n"
+            f"Thời gian hiện tại: **{now.strftime('%H:%M %d/%m/%Y')} UTC**\n"
+            "→ Chỉ được log ca trực đã hoặc đang diễn ra."
         )
     if ended_at > now + timedelta(minutes=5):
         raise ValueError(
-            f"KhÃ´ng thá»ƒ log ca trá»±c chÆ°a káº¿t thÃºc.\n"
-            f"Giá» káº¿t thÃºc trong log: **{ended_at.strftime('%H:%M %d/%m/%Y')} UTC**\n"
-            "â†’ Vui lÃ²ng chá» ca trá»±c káº¿t thÃºc rá»“i má»›i ná»™p log."
+            f"Không thể log ca trực chưa kết thúc.\n"
+            f"Giờ kết thúc trong log: **{ended_at.strftime('%H:%M %d/%m/%Y')} UTC**\n"
+            "→ Vui lòng chờ ca trực kết thúc rồi mới nộp log."
         )
 
-    # â”€â”€ Táº§ng 1: source_message_id unique (auto-scan) â”€â”€
+    # ── Tầng 1: source_message_id unique (auto-scan) ──
     if source_message_id:
         existing = await session.execute(
             select(DutyLog).where(DutyLog.source_message_id == source_message_id)
         )
         if existing.scalar_one_or_none():
-            raise ValueError("Log nÃ y Ä‘Ã£ Ä‘Æ°á»£c lÆ°u trÆ°á»›c Ä‘Ã³ (duplicate message)")
+            raise ValueError("Log này đã được lưu trước đó (duplicate message)")
 
-    # â”€â”€ Táº§ng 2: Exact duplicate (guild, user, start, end) â”€â”€
+    # ── Tầng 2: Exact duplicate (guild, user, start, end) ──
     dup = await session.execute(
         select(DutyLog)
         .where(DutyLog.guild_id == guild_id)
@@ -287,41 +287,41 @@ async def _save_duty_log(
     )
     if dup.scalar_one_or_none():
         raise ValueError(
-            f"Ca trá»±c **{username}** tá»« "
-            f"`{started_at.strftime('%H:%M %d/%m/%Y')}` Ä‘áº¿n "
-            f"`{ended_at.strftime('%H:%M %d/%m/%Y')}` Ä‘Ã£ Ä‘Æ°á»£c lÆ°u rá»“i."
+            f"Ca trực **{username}** từ "
+            f"`{started_at.strftime('%H:%M %d/%m/%Y')}` đến "
+            f"`{ended_at.strftime('%H:%M %d/%m/%Y')}` đã được lưu rồi."
         )
 
-    # â”€â”€ Táº§ng 3: Overlap check â€” chá»“ng láº¥p thá»i gian â”€â”€
-    # A chá»“ng B khi: A.start < B.end AND A.end > B.start
-    # Cho phÃ©p ca liÃªn tiáº¿p (A.end == B.start)
+    # ── Tầng 3: Overlap check — chồng lấp thời gian ──
+    # A chồng B khi: A.start < B.end AND A.end > B.start
+    # Cho phép ca liên tiếp (A.end == B.start)
     overlap = await session.execute(
         select(DutyLog)
         .where(DutyLog.guild_id == guild_id)
         .where(DutyLog.user_id == user_id)
-        .where(DutyLog.started_at < ended_at)    # ca cÅ© báº¯t Ä‘áº§u trÆ°á»›c khi ca má»›i káº¿t thÃºc
-        .where(DutyLog.ended_at > started_at)    # ca cÅ© káº¿t thÃºc sau khi ca má»›i báº¯t Ä‘áº§u
+        .where(DutyLog.started_at < ended_at)    # ca cũ bắt đầu trước khi ca mới kết thúc
+        .where(DutyLog.ended_at > started_at)    # ca cũ kết thúc sau khi ca mới bắt đầu
         .limit(1)
     )
     conflicting = overlap.scalar_one_or_none()
     if conflicting:
         raise ValueError(
-            f"Ca trá»±c nÃ y **chá»“ng láº¥p** vá»›i ca trá»±c Ä‘Ã£ tá»“n táº¡i cá»§a **{username}**:\n"
-            f"â€¢ ÄÃ£ cÃ³: `{conflicting.started_at.strftime('%H:%M %d/%m/%Y')}` â†’ "
+            f"Ca trực này **chồng lấp** với ca trực đã tồn tại của **{username}**:\n"
+            f"• Đã có: `{conflicting.started_at.strftime('%H:%M %d/%m/%Y')}` → "
             f"`{conflicting.ended_at.strftime('%H:%M %d/%m/%Y')}` "
-            f"({conflicting.duration_minutes} phÃºt)\n"
-            f"â€¢ Muá»‘n thÃªm: `{started_at.strftime('%H:%M %d/%m/%Y')}` â†’ "
+            f"({conflicting.duration_minutes} phút)\n"
+            f"• Muốn thêm: `{started_at.strftime('%H:%M %d/%m/%Y')}` → "
             f"`{ended_at.strftime('%H:%M %d/%m/%Y')}` "
-            f"({duration_minutes} phÃºt)\n"
-            "â†’ Hai ca trá»±c khÃ´ng Ä‘Æ°á»£c trÃ¹ng thá»i gian."
+            f"({duration_minutes} phút)\n"
+            "→ Hai ca trực không được trùng thời gian."
         )
 
-    # â”€â”€ Auto-link vá»›i MemberSchedule (náº¿u cÃ³ lá»‹ch khá»›p) â”€â”€
+    # ── Auto-link với MemberSchedule (nếu có lịch khớp) ──
     schedule_id: int | None = None
     try:
         from bot.utils.schedule_engine import find_matching_schedule
         from models.guild import GuildConfig
-        # Láº¥y timezone cá»§a guild Ä‘á»ƒ engine tÃ­nh weekday Ä‘Ãºng
+        # Lấy timezone của guild để engine tính weekday đúng
         cfg_row = await session.execute(
             select(GuildConfig.timezone).where(GuildConfig.guild_id == guild_id)
         )
@@ -332,7 +332,7 @@ async def _save_duty_log(
         if matched:
             schedule_id = matched.id
     except Exception as e:
-        # Auto-link lÃ  nice-to-have, khÃ´ng nÃªn fail save log
+        # Auto-link là nice-to-have, không nên fail save log
         logger.debug(f"Auto-link schedule skipped: {type(e).__name__}: {e}")
 
     log = DutyLog(
@@ -354,43 +354,43 @@ async def _save_duty_log(
 
 
 def _normalize_name(s: str | None) -> str:
-    """Lowercase + strip non-alphanumeric (cháº¥p nháº­n tiáº¿ng Viá»‡t) Ä‘á»ƒ so sÃ¡nh tÃªn fuzzy"""
+    """Lowercase + strip non-alphanumeric (chấp nhận tiếng Việt) để so sánh tên fuzzy"""
     if not s:
         return ""
     import re
     return re.sub(
-        r"[^a-z0-9Ã Ã¡áº£Ã£áº¡Äƒáº±áº¯áº³áºµáº·Ã¢áº§áº¥áº©áº«áº­Ã¨Ã©áº»áº½áº¹Ãªá»áº¿á»ƒá»…á»‡Ã¬Ã­á»‰Ä©á»‹Ã²Ã³á»Ãµá»Ã´á»“á»‘á»•á»—á»™Æ¡á»á»›á»Ÿá»¡á»£Ã¹Ãºá»§Å©á»¥Æ°á»«á»©á»­á»¯á»±á»³Ã½á»·á»¹á»µÄ‘]",
+        r"[^a-z0-9àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]",
         "", s.lower()
     )
 
 
 def _strip_role_tag(name: str | None) -> str:
     """
-    Bá» cÃ¡c prefix kiá»ƒu role/squad tag Ä‘á»ƒ láº¥y tÃªn thuáº§n.
-    Há»— trá»£:
-      "[VT] Tom Nguyá»…n"   â†’ "Tom Nguyá»…n"
-      "(EMS) Tom Nguyá»…n"  â†’ "Tom Nguyá»…n"
-      "ã€VTã€‘Tom Nguyá»…n"   â†’ "Tom Nguyá»…n"
-      "VT | Tom Nguyá»…n"   â†’ "Tom Nguyá»…n"
-      "VT - Tom Nguyá»…n"   â†’ "Tom Nguyá»…n" (náº¿u VT ngáº¯n)
+    Bỏ các prefix kiểu role/squad tag để lấy tên thuần.
+    Hỗ trợ:
+      "[VT] Tom Nguyễn"   → "Tom Nguyễn"
+      "(EMS) Tom Nguyễn"  → "Tom Nguyễn"
+      "【VT】Tom Nguyễn"   → "Tom Nguyễn"
+      "VT | Tom Nguyễn"   → "Tom Nguyễn"
+      "VT - Tom Nguyễn"   → "Tom Nguyễn" (nếu VT ngắn)
 
-    Tráº£ vá» tÃªn Ä‘Ã£ strip. Náº¿u khÃ´ng cÃ³ pattern â†’ tráº£ vá» tÃªn gá»‘c.
+    Trả về tên đã strip. Nếu không có pattern → trả về tên gốc.
     """
     import re
     if not name:
         return ""
     s = name.strip()
-    # [ABC] / (ABC) / ã€ABCã€‘ / ã€ŒABCã€ prefix (tag dÃ i tá»‘i Ä‘a 15 kÃ½ tá»±)
-    s = re.sub(r"^[\[\(\{ã€ã€Œ]([^\]\)\}ã€‘ã€]{1,15})[\]\)\}ã€‘ã€]\s*", "", s)
-    # "ABC | " hoáº·c "ABCâ€¢ " prefix (tag dÃ i tá»‘i Ä‘a 15 kÃ½ tá»± trÆ°á»›c |)
-    s = re.sub(r"^[^|â€¢]{1,15}[|â€¢]\s*", "", s)
+    # [ABC] / (ABC) / 【ABC】 / 「ABC」 prefix (tag dài tối đa 15 ký tự)
+    s = re.sub(r"^[\[\(\{【「]([^\]\)\}】」]{1,15})[\]\)\}】」]\s*", "", s)
+    # "ABC | " hoặc "ABC• " prefix (tag dài tối đa 15 ký tự trước |)
+    s = re.sub(r"^[^|•]{1,15}[|•]\s*", "", s)
     return s.strip()
 
 
 def _identity_candidates(author: "discord.abc.User | discord.Member") -> list[str]:
     """
-    Tráº£ vá» táº¥t cáº£ tÃªn Ä‘á»‹nh danh kháº£ dÄ© cá»§a 1 user â€” bao gá»“m cáº£ raw vÃ  sau khi
-    strip role tag prefix. DÃ¹ng Ä‘á»ƒ so sÃ¡nh STRICT exact match.
+    Trả về tất cả tên định danh khả dĩ của 1 user — bao gồm cả raw và sau khi
+    strip role tag prefix. Dùng để so sánh STRICT exact match.
     """
     raw_fields = [
         getattr(author, "name", "") or "",
@@ -414,13 +414,13 @@ def _resolve_name_owner(
     parsed_name: str,
 ) -> tuple[str, list[discord.Member]]:
     """
-    TÃ¬m táº¥t cáº£ member trong guild khá»›p vá»›i parsed_name (qua _username_matches_author).
-    DÃ¹ng Ä‘á»ƒ chá»‘ng IMPERSONATION: user khÃ´ng thá»ƒ Ä‘á»•i nick thÃ nh tÃªn ngÆ°á»i khÃ¡c Ä‘á»ƒ cháº¥m cÃ´ng há»™.
+    Tìm tất cả member trong guild khớp với parsed_name (qua _username_matches_author).
+    Dùng để chống IMPERSONATION: user không thể đổi nick thành tên người khác để chấm công hộ.
 
     Returns:
-        ("ok",        [member])    â€” chá»‰ DUY NHáº¤T 1 ngÆ°á»i khá»›p (an toÃ n)
-        ("ambiguous", [members])   â€” nhiá»u ngÆ°á»i khá»›p (cáº§n Ä‘áº·t nick rÃµ rÃ ng hÆ¡n)
-        ("none",      [])          â€” khÃ´ng ai trong server cÃ³ tÃªn nÃ y
+        ("ok",        [member])    — chỉ DUY NHẤT 1 người khớp (an toàn)
+        ("ambiguous", [members])   — nhiều người khớp (cần đặt nick rõ ràng hơn)
+        ("none",      [])          — không ai trong server có tên này
     """
     if guild is None:
         return "none", []
@@ -442,21 +442,21 @@ def _resolve_name_owner(
 
 def _username_matches_author(parsed_name: str, author: discord.abc.User) -> bool:
     """
-    STRICT: parsed_name pháº£i KHá»šP CHÃNH XÃC (sau normalize) vá»›i má»™t trong cÃ¡c tÃªn
-    Ä‘á»‹nh danh cá»§a Discord user â€” bao gá»“m cáº£ raw vÃ  sau khi strip role tag prefix.
+    STRICT: parsed_name phải KHỚP CHÍNH XÁC (sau normalize) với một trong các tên
+    định danh của Discord user — bao gồm cả raw và sau khi strip role tag prefix.
 
-    Strip 2 chiá»u: cáº£ parsed_name VÃ€ candidate Ä‘á»u thá»­ strip tag trÆ°á»›c khi compare.
-    Tag máº«u há»— trá»£ (â‰¤15 kÃ½ tá»± trÆ°á»›c dáº¥u | hoáº·c trong [...] / (...) / ã€...ã€‘):
-      - "TTS | TÃªn", "BS | TÃªn", "PK | TÃªn", "TK | TÃªn"
-      - "QLBS | TÃªn", "TKBS | TÃªn", "VP | TÃªn", "VT | TÃªn"
-      - "[EMS] TÃªn", "(VT) TÃªn", "ã€EMSã€‘TÃªn"
+    Strip 2 chiều: cả parsed_name VÀ candidate đều thử strip tag trước khi compare.
+    Tag mẫu hỗ trợ (≤15 ký tự trước dấu | hoặc trong [...] / (...) / 【...】):
+      - "TTS | Tên", "BS | Tên", "PK | Tên", "TK | Tên"
+      - "QLBS | Tên", "TKBS | Tên", "VP | Tên", "VT | Tên"
+      - "[EMS] Tên", "(VT) Tên", "【EMS】Tên"
 
-    KhÃ´ng match substring lá»ng (Ä‘Ã£ bá» á»Ÿ audit Ä‘á»ƒ chá»‘ng impersonation).
+    Không match substring lỏng (đã bỏ ở audit để chống impersonation).
     """
     if not parsed_name:
         return False
 
-    # Táº¡o set cÃ¡c biáº¿n thá»ƒ cá»§a parsed name: raw + stripped
+    # Tạo set các biến thể của parsed name: raw + stripped
     parsed_variants: set[str] = set()
     pn_raw = _normalize_name(parsed_name)
     if pn_raw:
@@ -467,7 +467,7 @@ def _username_matches_author(parsed_name: str, author: discord.abc.User) -> bool
     if not parsed_variants:
         return False
 
-    # So sÃ¡nh vá»›i má»i biáº¿n thá»ƒ cá»§a candidate
+    # So sánh với mọi biến thể của candidate
     for candidate in _identity_candidates(author):
         cand_n = _normalize_name(candidate)
         if cand_n and cand_n in parsed_variants:
@@ -479,45 +479,45 @@ class LogDutyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    log_group = app_commands.Group(name="log", description="Quáº£n lÃ½ log cháº¥m cÃ´ng")
+    log_group = app_commands.Group(name="log", description="Quản lý log chấm công")
 
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Auto-scan: tá»± Ä‘á»™ng parse má»i tin nháº¯n LOG DUTY trong channel Ä‘Ã£ setup
-    # User chá»‰ cáº§n gá»­i/forward tin nháº¯n â†’ bot tá»± lÆ°u, khÃ´ng cáº§n slash command
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─────────────────────────────────────────────────────────────────
+    # Auto-scan: tự động parse mọi tin nhắn LOG DUTY trong channel đã setup
+    # User chỉ cần gửi/forward tin nhắn → bot tự lưu, không cần slash command
+    # ─────────────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Bá» qua Má»ŒI tin nháº¯n cá»§a bot (ká»ƒ cáº£ bot khÃ¡c hay webhook)
+        # Bỏ qua MỌI tin nhắn của bot (kể cả bot khác hay webhook)
         if message.author.bot:
             return
         if not message.guild:
             return
 
-        # Láº¥y config guild â€” pháº£i Ä‘Ã£ setup
+        # Lấy config guild — phải đã setup
         async with AsyncSessionLocal() as session:
             config = await _get_guild_config(session, message.guild.id)
 
         if not config or not config.is_active:
             return
 
-        # Chá»‰ scan trong channel Ä‘Ã£ set; náº¿u chÆ°a set log_channel_id thÃ¬ Bá»Ž QUA
+        # Chỉ scan trong channel đã set; nếu chưa set log_channel_id thì BỎ QUA
         if not config.log_channel_id:
             return
         if message.channel.id != config.log_channel_id:
             return
 
-        # TrÃ­ch xuáº¥t táº¥t cáº£ text candidates: content gá»‘c + forward snapshots + embeds
+        # Trích xuất tất cả text candidates: content gốc + forward snapshots + embeds
         candidates = self._extract_message_text(message)
         if not candidates:
             return
 
         logger.debug(
-            f"[auto-scan] QuÃ©t msg {message.id} tá»« {message.author}: "
+            f"[auto-scan] Quét msg {message.id} từ {message.author}: "
             f"{len(candidates)} candidate(s)"
         )
 
-        # Thá»­ parse tá»«ng Ä‘oáº¡n; láº¥y match Ä‘áº§u tiÃªn há»£p lá»‡
+        # Thử parse từng đoạn; lấy match đầu tiên hợp lệ
         parsed = None
         for text in candidates:
             result = parse_duty_text(text)
@@ -525,9 +525,9 @@ class LogDutyCog(commands.Cog):
                 continue
             errors = result.validate()
             if errors:
-                logger.info(f"[auto-scan] Parse Ä‘Æ°á»£c nhÆ°ng validation lá»—i: {errors}")
+                logger.info(f"[auto-scan] Parse được nhưng validation lỗi: {errors}")
                 try:
-                    await message.add_reaction("âš ï¸")
+                    await message.add_reaction("⚠️")
                     await message.reply(
                         embed=build_log_invalid_embed(errors, message.author),
                         mention_author=False,
@@ -542,17 +542,17 @@ class LogDutyCog(commands.Cog):
         if not parsed:
             return
 
-        # â”€â”€ Verify STRICT: tÃªn trong LOG DUTY pháº£i DUY NHáº¤T thuá»™c vá» ngÆ°á»i gá»­i â”€â”€
-        # Iterate toÃ n bá»™ guild members â†’ tÃ¬m ai khá»›p vá»›i parsed.username.
-        # Chá»‘ng IMPERSONATION: user khÃ´ng thá»ƒ Ä‘á»•i nick thÃ nh tÃªn ngÆ°á»i khÃ¡c Ä‘á»ƒ cháº¥m cÃ´ng há»™.
+        # ── Verify STRICT: tên trong LOG DUTY phải DUY NHẤT thuộc về người gửi ──
+        # Iterate toàn bộ guild members → tìm ai khớp với parsed.username.
+        # Chống IMPERSONATION: user không thể đổi nick thành tên người khác để chấm công hộ.
         status, matches = _resolve_name_owner(message.guild, parsed.username)
         if status == "none":
             logger.info(
-                f"[auto-scan] TÃªn khÃ´ng thuá»™c ai: parsed='{parsed.username}' "
+                f"[auto-scan] Tên không thuộc ai: parsed='{parsed.username}' "
                 f"author={message.author} (id={message.author.id})"
             )
             try:
-                await message.add_reaction("ðŸš«")
+                await message.add_reaction("🚫")
                 await message.reply(
                     embed=build_log_name_mismatch_embed(parsed.username, message.author),
                     mention_author=False,
@@ -567,7 +567,7 @@ class LogDutyCog(commands.Cog):
                 f"matches={[m.display_name for m in matches]}"
             )
             try:
-                await message.add_reaction("âš ï¸")
+                await message.add_reaction("⚠️")
                 await message.reply(
                     embed=build_log_ambiguous_name_embed(
                         parsed.username, matches, message.author
@@ -578,15 +578,15 @@ class LogDutyCog(commands.Cog):
             except discord.HTTPException:
                 pass
             return
-        # status == "ok": cÃ³ duy nháº¥t 1 ngÆ°á»i khá»›p
+        # status == "ok": có duy nhất 1 người khớp
         if matches[0].id != message.author.id:
             logger.warning(
                 f"[auto-scan] IMPERSONATION: author={message.author.id} "
-                f"({message.author.display_name}) cá»‘ gáº¯ng cháº¥m cÃ´ng cho "
+                f"({message.author.display_name}) cố gắng chấm công cho "
                 f"{matches[0].id} ({matches[0].display_name})"
             )
             try:
-                await message.add_reaction("ðŸš«")
+                await message.add_reaction("🚫")
                 await message.reply(
                     embed=build_log_impersonation_embed(
                         parsed.username, matches[0], message.author
@@ -614,7 +614,7 @@ class LogDutyCog(commands.Cog):
                 pass
             return
 
-        # LÆ°u DB
+        # Lưu DB
         async with AsyncSessionLocal() as session:
             try:
                 await _save_duty_log(
@@ -646,12 +646,12 @@ class LogDutyCog(commands.Cog):
                 ))
                 await session.commit()
                 logger.info(
-                    f"[auto-scan] ÄÃ£ lÆ°u log: guild={message.guild.id} "
+                    f"[auto-scan] Đã lưu log: guild={message.guild.id} "
                     f"user={parsed.username} duration={parsed.duration_minutes}p"
                 )
-                # âœ… Embed Ä‘áº¹p xÃ¡c nháº­n Ä‘Ã£ lÆ°u â€” kÃ¨m thÃ´ng tin ca trá»±c Ä‘á»ƒ member kiá»ƒm tra
+                # ✅ Embed đẹp xác nhận đã lưu — kèm thông tin ca trực để member kiểm tra
                 try:
-                    await message.add_reaction("âœ…")
+                    await message.add_reaction("✅")
                     config_tz = config.timezone if config else None
                     await message.reply(
                         embed=build_log_accepted_embed(parsed, message.author, config_tz),
@@ -662,11 +662,11 @@ class LogDutyCog(commands.Cog):
 
             except ValueError as e:
                 err_str = str(e)
-                # Duplicate â†’ react ðŸ” + embed nháº¹
-                if "Ä‘Ã£ Ä‘Æ°á»£c lÆ°u" in err_str or "duplicate" in err_str.lower():
+                # Duplicate → react 🔁 + embed nhẹ
+                if "đã được lưu" in err_str or "duplicate" in err_str.lower():
                     logger.debug(f"[auto-scan] Duplicate skip: {e}")
                     try:
-                        await message.add_reaction("ðŸ”")
+                        await message.add_reaction("🔁")
                         await message.reply(
                             embed=build_log_duplicate_embed(message.author),
                             mention_author=False,
@@ -675,10 +675,10 @@ class LogDutyCog(commands.Cog):
                     except discord.HTTPException:
                         pass
                 else:
-                    # Overlap, tÆ°Æ¡ng lai, etc. â†’ reject embed Ä‘áº§y Ä‘á»§
+                    # Overlap, tương lai, etc. → reject embed đầy đủ
                     logger.info(f"[auto-scan] Validation reject: {e}")
                     try:
-                        await message.add_reaction("ðŸš«")
+                        await message.add_reaction("🚫")
                         await message.reply(
                             embed=build_log_rejected_embed(parsed, err_str, message.author),
                             mention_author=False,
@@ -688,11 +688,11 @@ class LogDutyCog(commands.Cog):
                         pass
 
             except IntegrityError as e:
-                # Race condition Layer 2 (DB UniqueConstraint) â€” coi nhÆ° duplicate
+                # Race condition Layer 2 (DB UniqueConstraint) — coi như duplicate
                 await session.rollback()
                 logger.info(f"[auto-scan] DB-level duplicate (race): {e.orig}")
                 try:
-                    await message.add_reaction("ðŸ”")
+                    await message.add_reaction("🔁")
                     await message.reply(
                         embed=build_log_duplicate_embed(message.author),
                         mention_author=False,
@@ -703,15 +703,15 @@ class LogDutyCog(commands.Cog):
 
             except Exception as e:
                 await session.rollback()
-                logger.error(f"[auto-scan] Lá»—i lÆ°u log: {e}", exc_info=True)
+                logger.error(f"[auto-scan] Lỗi lưu log: {e}", exc_info=True)
                 try:
-                    await message.add_reaction("âŒ")
+                    await message.add_reaction("❌")
                     await message.reply(
                         embed=build_error_embed(
-                            "ÄÃ£ xáº£y ra lá»—i há»‡ thá»‘ng khi lÆ°u log. "
-                            "Vui lÃ²ng thá»­ láº¡i sau Ã­t phÃºt.\n\n"
-                            "_Náº¿u cáº§n há»— trá»£ vui lÃ²ng liÃªn há»‡ ban lÃ£nh Ä‘áº¡o._",
-                            title="âŒ Lá»—i há»‡ thá»‘ng",
+                            "Đã xảy ra lỗi hệ thống khi lưu log. "
+                            "Vui lòng thử lại sau ít phút.\n\n"
+                            "_Nếu cần hỗ trợ vui lòng liên hệ ban lãnh đạo._",
+                            title="❌ Lỗi hệ thống",
                         ),
                         mention_author=False,
                         delete_after=30,
@@ -722,10 +722,10 @@ class LogDutyCog(commands.Cog):
     @staticmethod
     def _extract_message_text(message: discord.Message) -> list[str]:
         """
-        Tráº£ vá» list cÃ¡c Ä‘oáº¡n text cÃ³ thá»ƒ chá»©a LOG DUTY:
-        - Ná»™i dung trá»±c tiáº¿p cá»§a message
+        Trả về list các đoạn text có thể chứa LOG DUTY:
+        - Nội dung trực tiếp của message
         - Forward snapshots (Discord forward feature, discord.py 2.4+)
-        - MÃ´ táº£ + fields cá»§a cÃ¡c embed
+        - Mô tả + fields của các embed
         """
         out: list[str] = []
         if message.content:
@@ -749,7 +749,7 @@ class LogDutyCog(commands.Cog):
 
     @staticmethod
     def _embed_to_text(embed: discord.Embed) -> str:
-        """GhÃ©p táº¥t cáº£ pháº§n text cá»§a embed thÃ nh 1 chuá»—i"""
+        """Ghép tất cả phần text của embed thành 1 chuỗi"""
         parts: list[str] = []
         if embed.title:
             parts.append(embed.title)
@@ -764,9 +764,9 @@ class LogDutyCog(commands.Cog):
             parts.append(embed.footer.text)
         return "\n".join(parts)
 
-    @log_group.command(name="upload", description="Upload áº£nh LOG DUTY cá»§a báº¡n â†’ OCR tá»± Ä‘á»™ng lÆ°u")
+    @log_group.command(name="upload", description="Upload ảnh LOG DUTY của bạn → OCR tự động lưu")
     @app_commands.describe(
-        anh="áº¢nh chá»¥p mÃ n hÃ¬nh LOG DUTY (JPG/PNG/WEBP, tá»‘i Ä‘a 5MB)",
+        anh="Ảnh chụp màn hình LOG DUTY (JPG/PNG/WEBP, tối đa 5MB)",
     )
     @app_commands.checks.cooldown(rate=5, per=60.0)
     async def log_upload(
@@ -775,9 +775,9 @@ class LogDutyCog(commands.Cog):
         anh: discord.Attachment,
     ):
         """
-        STRICT MODE: Má»—i user chá»‰ Ä‘Æ°á»£c upload log cá»§a CHÃNH MÃŒNH.
-        Mod/Admin cÅ©ng KHÃ”NG Ä‘Æ°á»£c upload há»™ â€” Ä‘áº£m báº£o tÃ­nh chÃ­nh xÃ¡c vÃ  truy váº¿t.
-        TÃªn trong LOG DUTY pháº£i khá»›p display_name/name/global_name/nick cá»§a ngÆ°á»i gá»­i.
+        STRICT MODE: Mỗi user chỉ được upload log của CHÍNH MÌNH.
+        Mod/Admin cũng KHÔNG được upload hộ — đảm bảo tính chính xác và truy vết.
+        Tên trong LOG DUTY phải khớp display_name/name/global_name/nick của người gửi.
         """
         await interaction.response.defer(ephemeral=True)
 
@@ -790,39 +790,39 @@ class LogDutyCog(commands.Cog):
             if config and config.log_channel_id and interaction.channel_id != config.log_channel_id:
                 await interaction.followup.send(
                     embed=build_error_embed(
-                        f"Chá»‰ Ä‘Æ°á»£c dÃ¹ng lá»‡nh nÃ y trong <#{config.log_channel_id}>"
+                        f"Chỉ được dùng lệnh này trong <#{config.log_channel_id}>"
                     ),
                     ephemeral=True,
                 )
                 return
 
-        # Validate áº£nh
+        # Validate ảnh
         mime = anh.content_type or "image/unknown"
         if mime not in {"image/jpeg", "image/png", "image/webp"}:
             await interaction.followup.send(
-                embed=build_error_embed("Chá»‰ cháº¥p nháº­n áº£nh JPG, PNG hoáº·c WEBP."),
+                embed=build_error_embed("Chỉ chấp nhận ảnh JPG, PNG hoặc WEBP."),
                 ephemeral=True,
             )
             return
 
         if anh.size > 5 * 1024 * 1024:
             await interaction.followup.send(
-                embed=build_error_embed("áº¢nh quÃ¡ lá»›n. Tá»‘i Ä‘a 5MB."),
+                embed=build_error_embed("Ảnh quá lớn. Tối đa 5MB."),
                 ephemeral=True,
             )
             return
 
         image_bytes = await anh.read()
 
-        # OCR â€” cháº¡y trong thread pool, khÃ´ng block event loop
+        # OCR — chạy trong thread pool, không block event loop
         parsed = await extract_duty_from_image(image_bytes, mime)
         if parsed is None:
             await interaction.followup.send(
                 embed=build_error_embed(
-                    "KhÃ´ng tÃ¬m tháº¥y Ä‘á»‹nh dáº¡ng LOG DUTY trong áº£nh.\n"
-                    "HÃ£y Ä‘áº£m báº£o áº£nh chá»©a Ä‘áº§y Ä‘á»§: **TÃªn**, **Thá»i gian lÃ m viá»‡c**, "
-                    "**Thá»i gian báº¯t Ä‘áº§u**, **Thá»i gian káº¿t thÃºc**.\n"
-                    "Náº¿u áº£nh má», hÃ£y thá»­ chá»¥p láº¡i rÃµ hÆ¡n hoáº·c dÃ¹ng `/log forward` Ä‘á»ƒ paste text."
+                    "Không tìm thấy định dạng LOG DUTY trong ảnh.\n"
+                    "Hãy đảm bảo ảnh chứa đầy đủ: **Tên**, **Thời gian làm việc**, "
+                    "**Thời gian bắt đầu**, **Thời gian kết thúc**.\n"
+                    "Nếu ảnh mờ, hãy thử chụp lại rõ hơn hoặc dùng `/log forward` để paste text."
                 ),
                 ephemeral=True,
             )
@@ -832,12 +832,12 @@ class LogDutyCog(commands.Cog):
         errors = parsed.validate()
         if errors:
             await interaction.followup.send(
-                embed=build_error_embed("Dá»¯ liá»‡u khÃ´ng há»£p lá»‡:\nâ€¢ " + "\nâ€¢ ".join(errors)),
+                embed=build_error_embed("Dữ liệu không hợp lệ:\n• " + "\n• ".join(errors)),
                 ephemeral=True,
             )
             return
 
-        # â”€â”€ STRICT: tÃªn DUY NHáº¤T thuá»™c vá» ngÆ°á»i gá»­i (chá»‘ng impersonation qua nick) â”€â”€
+        # ── STRICT: tên DUY NHẤT thuộc về người gửi (chống impersonation qua nick) ──
         status, matches = _resolve_name_owner(interaction.guild, parsed.username)
         if status == "none":
             await interaction.followup.send(
@@ -854,7 +854,7 @@ class LogDutyCog(commands.Cog):
         if matches[0].id != interaction.user.id:
             logger.warning(
                 f"[/log upload] IMPERSONATION: user={interaction.user.id} "
-                f"({interaction.user.display_name}) cá»‘ gáº¯ng cháº¥m cÃ´ng cho "
+                f"({interaction.user.display_name}) cố gắng chấm công cho "
                 f"{matches[0].id} ({matches[0].display_name})"
             )
             async with AsyncSessionLocal() as audit_session:
@@ -901,8 +901,8 @@ class LogDutyCog(commands.Cog):
         msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         view.set_message(msg)
 
-    @log_group.command(name="forward", description="Paste text LOG DUTY cá»§a báº¡n Ä‘á»ƒ lÆ°u thá»§ cÃ´ng")
-    @app_commands.describe(text="Ná»™i dung LOG DUTY (copy paste tá»« bot cháº¥m cÃ´ng)")
+    @log_group.command(name="forward", description="Paste text LOG DUTY của bạn để lưu thủ công")
+    @app_commands.describe(text="Nội dung LOG DUTY (copy paste từ bot chấm công)")
     @app_commands.checks.cooldown(rate=5, per=60.0)
     async def log_forward(
         self,
@@ -910,8 +910,8 @@ class LogDutyCog(commands.Cog):
         text: str,
     ):
         """
-        STRICT MODE: Má»—i user chá»‰ Ä‘Æ°á»£c forward log cá»§a CHÃNH MÃŒNH.
-        Mod/Admin cÅ©ng KHÃ”NG Ä‘Æ°á»£c forward há»™ â€” Ä‘áº£m báº£o tÃ­nh chÃ­nh xÃ¡c vÃ  truy váº¿t.
+        STRICT MODE: Mỗi user chỉ được forward log của CHÍNH MÌNH.
+        Mod/Admin cũng KHÔNG được forward hộ — đảm bảo tính chính xác và truy vết.
         """
         await interaction.response.defer(ephemeral=True)
 
@@ -924,11 +924,11 @@ class LogDutyCog(commands.Cog):
         if parsed is None:
             await interaction.followup.send(
                 embed=build_error_embed(
-                    "KhÃ´ng nháº­n diá»‡n Ä‘Æ°á»£c Ä‘á»‹nh dáº¡ng LOG DUTY.\n"
-                    "Vui lÃ²ng copy Ä‘Ãºng Ä‘á»‹nh dáº¡ng:\n"
-                    "```\nLOG DUTY\nTÃªn: ...\nThá»i gian lÃ m viá»‡c: X phÃºt\n"
-                    "Thá»i gian báº¯t Ä‘áº§u: DD/MM/YYYY HH:MM:SS\n"
-                    "Thá»i gian káº¿t thÃºc: DD/MM/YYYY HH:MM:SS\n```"
+                    "Không nhận diện được định dạng LOG DUTY.\n"
+                    "Vui lòng copy đúng định dạng:\n"
+                    "```\nLOG DUTY\nTên: ...\nThời gian làm việc: X phút\n"
+                    "Thời gian bắt đầu: DD/MM/YYYY HH:MM:SS\n"
+                    "Thời gian kết thúc: DD/MM/YYYY HH:MM:SS\n```"
                 ),
                 ephemeral=True,
             )
@@ -937,12 +937,12 @@ class LogDutyCog(commands.Cog):
         errors = parsed.validate()
         if errors:
             await interaction.followup.send(
-                embed=build_error_embed("Dá»¯ liá»‡u khÃ´ng há»£p lá»‡:\nâ€¢ " + "\nâ€¢ ".join(errors)),
+                embed=build_error_embed("Dữ liệu không hợp lệ:\n• " + "\n• ".join(errors)),
                 ephemeral=True,
             )
             return
 
-        # â”€â”€ STRICT: tÃªn DUY NHáº¤T thuá»™c vá» ngÆ°á»i gá»­i (chá»‘ng impersonation qua nick) â”€â”€
+        # ── STRICT: tên DUY NHẤT thuộc về người gửi (chống impersonation qua nick) ──
         status, matches = _resolve_name_owner(interaction.guild, parsed.username)
         if status == "none":
             await interaction.followup.send(
@@ -959,7 +959,7 @@ class LogDutyCog(commands.Cog):
         if matches[0].id != interaction.user.id:
             logger.warning(
                 f"[/log forward] IMPERSONATION: user={interaction.user.id} "
-                f"({interaction.user.display_name}) cá»‘ gáº¯ng cháº¥m cÃ´ng cho "
+                f"({interaction.user.display_name}) cố gắng chấm công cho "
                 f"{matches[0].id} ({matches[0].display_name})"
             )
             async with AsyncSessionLocal() as audit_session:
@@ -1006,12 +1006,12 @@ class LogDutyCog(commands.Cog):
         msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         view.set_message(msg)
 
-    @log_group.command(name="view", description="Xem lá»‹ch sá»­ cháº¥m cÃ´ng")
+    @log_group.command(name="view", description="Xem lịch sử chấm công")
     @app_commands.describe(
-        tat_ca="Xem Táº¤T Cáº¢ thÃ nh viÃªn dáº¡ng báº£ng (cáº§n MOD+)",
-        thanh_vien="Xem log cá»§a thÃ nh viÃªn cá»¥ thá»ƒ (cáº§n MOD+). Bá» trá»‘ng = xem cá»§a mÃ¬nh",
-        ten="Filter theo username trong log. Cáº§n MOD+",
-        trang="Sá»‘ trang (máº·c Ä‘á»‹nh: 1)"
+        tat_ca="Xem TẤT CẢ thành viên dạng bảng (cần MOD+)",
+        thanh_vien="Xem log của thành viên cụ thể (cần MOD+). Bỏ trống = xem của mình",
+        ten="Filter theo username trong log. Cần MOD+",
+        trang="Số trang (mặc định: 1)"
     )
     @app_commands.checks.cooldown(rate=10, per=60.0)
     async def log_view(
@@ -1111,18 +1111,18 @@ class LogDutyCog(commands.Cog):
                 total_count=total, grand_total_minutes=grand_total,
             )
         embed.add_field(
-            name="ðŸ—‘ï¸ XÃ³a log",
-            value="DÃ¹ng `/log delete id:<sá»‘>` Ä‘á»ƒ xÃ³a. **CHá»ˆ Admin** má»›i cÃ³ quyá»n xÃ³a log.",
+            name="🗑️ Xóa log",
+            value="Dùng `/log delete id:<số>` để xóa. **CHỈ Admin** mới có quyền xóa log.",
             inline=False,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @log_group.command(
         name="scan",
-        description="QuÃ©t lá»‹ch sá»­ kÃªnh cháº¥m cÃ´ng Ä‘á»ƒ báº¯t LOG DUTY bá»‹ bá» sÃ³t (Mod+)",
+        description="Quét lịch sử kênh chấm công để bắt LOG DUTY bị bỏ sót (Mod+)",
     )
     @app_commands.describe(
-        limit="Sá»‘ tin nháº¯n quÃ©t gáº§n nháº¥t (máº·c Ä‘á»‹nh 200, tá»‘i Ä‘a 1000)",
+        limit="Số tin nhắn quét gần nhất (mặc định 200, tối đa 1000)",
     )
     @app_commands.checks.cooldown(rate=1, per=120.0)
     async def log_scan(self, interaction: discord.Interaction, limit: int = 200):
@@ -1136,7 +1136,7 @@ class LogDutyCog(commands.Cog):
         if not config or not config.log_channel_id:
             await interaction.followup.send(
                 embed=build_error_embed(
-                    "Server chÆ°a setup channel cháº¥m cÃ´ng. DÃ¹ng `/setup channel` trÆ°á»›c."
+                    "Server chưa setup channel chấm công. Dùng `/setup channel` trước."
                 ),
                 ephemeral=True,
             )
@@ -1150,32 +1150,32 @@ class LogDutyCog(commands.Cog):
 
         if "error" in stats:
             err_map = {
-                "channel_not_found": "KhÃ´ng tÃ¬m tháº¥y channel cháº¥m cÃ´ng.",
-                "no_permission_read_history": "Bot khÃ´ng cÃ³ quyá»n **Read Message History** trong channel cháº¥m cÃ´ng.",
+                "channel_not_found": "Không tìm thấy channel chấm công.",
+                "no_permission_read_history": "Bot không có quyền **Read Message History** trong channel chấm công.",
             }
-            msg = err_map.get(stats["error"], f"Lá»—i: {stats['error']}")
+            msg = err_map.get(stats["error"], f"Lỗi: {stats['error']}")
             await interaction.followup.send(embed=build_error_embed(msg), ephemeral=True)
             return
 
         channel_mention = f"<#{config.log_channel_id}>"
         embed = discord.Embed(
-            title="ðŸ”  QuÃ©t backfill hoÃ n táº¥t",
+            title="🔍  Quét backfill hoàn tất",
             description=(
-                f"ÄÃ£ quÃ©t **{stats['scanned']}** tin nháº¯n gáº§n nháº¥t trong {channel_mention}.\n\n"
+                f"Đã quét **{stats['scanned']}** tin nhắn gần nhất trong {channel_mention}.\n\n"
                 f"```diff\n"
-                f"+ {stats['saved']} log Má»šI Ä‘Ã£ lÆ°u\n"
-                f"  {stats['dup']} Ä‘Ã£ cÃ³ trong DB (skip)\n"
-                f"  {stats['invalid']} parse Ä‘Æ°á»£c nhÆ°ng validate lá»—i\n"
-                f"  {stats['no_match']} tÃªn khÃ´ng khá»›p author (skip)\n"
+                f"+ {stats['saved']} log MỚI đã lưu\n"
+                f"  {stats['dup']} đã có trong DB (skip)\n"
+                f"  {stats['invalid']} parse được nhưng validate lỗi\n"
+                f"  {stats['no_match']} tên không khớp author (skip)\n"
                 f"```"
             ),
             color=0x10B981 if stats['saved'] > 0 else 0x64748B,
         )
-        embed.set_footer(text="Job idempotent â€” cháº¡y láº¡i nhiá»u láº§n khÃ´ng sinh duplicate")
+        embed.set_footer(text="Job idempotent — chạy lại nhiều lần không sinh duplicate")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @log_group.command(name="delete", description="XÃ³a 1 ca trá»±c theo ID (CHá»ˆ Admin)")
-    @app_commands.describe(id="ID cá»§a ca trá»±c (xem qua /log view)")
+    @log_group.command(name="delete", description="Xóa 1 ca trực theo ID (CHỈ Admin)")
+    @app_commands.describe(id="ID của ca trực (xem qua /log view)")
     @app_commands.checks.cooldown(rate=5, per=60.0)
     async def log_delete(
         self,
@@ -1196,7 +1196,7 @@ class LogDutyCog(commands.Cog):
 
             if log is None:
                 await interaction.followup.send(
-                    embed=build_error_embed(f"KhÃ´ng tÃ¬m tháº¥y log vá»›i ID `{id}` trong server nÃ y."),
+                    embed=build_error_embed(f"Không tìm thấy log với ID `{id}` trong server này."),
                     ephemeral=True,
                 )
                 return
@@ -1224,8 +1224,8 @@ class LogDutyCog(commands.Cog):
 
         await interaction.followup.send(
             embed=build_success_embed(
-                f"ÄÃ£ xÃ³a log **#{id}** cá»§a **{snapshot['for_username']}** "
-                f"({snapshot['duration_minutes']} phÃºt)."
+                f"Đã xóa log **#{id}** của **{snapshot['for_username']}** "
+                f"({snapshot['duration_minutes']} phút)."
             ),
             ephemeral=True,
         )
@@ -1234,25 +1234,24 @@ class LogDutyCog(commands.Cog):
     @log_forward.error
     @log_view.error
     @log_delete.error
-    @log_scan.error
     async def on_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CommandOnCooldown):
             await interaction.response.send_message(
                 embed=build_error_embed(
-                    f"Báº¡n dÃ¹ng lá»‡nh quÃ¡ nhanh! Thá»­ láº¡i sau **{error.retry_after:.0f}s**."
+                    f"Bạn dùng lệnh quá nhanh! Thử lại sau **{error.retry_after:.0f}s**."
                 ),
                 ephemeral=True,
             )
         else:
-            logger.error(f"Lá»—i command log: {error}", exc_info=True)
+            logger.error(f"Lỗi command log: {error}", exc_info=True)
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
-                        embed=build_error_embed("ÄÃ£ xáº£y ra lá»—i khÃ´ng mong muá»‘n."), ephemeral=True
+                        embed=build_error_embed("Đã xảy ra lỗi không mong muốn."), ephemeral=True
                     )
                 else:
                     await interaction.followup.send(
-                        embed=build_error_embed("ÄÃ£ xáº£y ra lá»—i khÃ´ng mong muá»‘n."), ephemeral=True
+                        embed=build_error_embed("Đã xảy ra lỗi không mong muốn."), ephemeral=True
                     )
             except discord.HTTPException:
                 pass
@@ -1267,6 +1266,6 @@ async def _get_guild_config(session: AsyncSession, guild_id: int) -> GuildConfig
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LogDutyCog(bot))
-    # Pre-warm EasyOCR model khi bot start Ä‘á»ƒ trÃ¡nh lag á»Ÿ láº§n upload Ä‘áº§u tiÃªn
+    # Pre-warm EasyOCR model khi bot start để tránh lag ở lần upload đầu tiên
     import asyncio
     asyncio.create_task(warmup_ocr())
