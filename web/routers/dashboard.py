@@ -170,7 +170,7 @@ async def get_overview(
                 "total_hhmm": minutes_to_hhmm(r.total_minutes),
                 "sessions": r.sessions,
             }
-            for r in top5.all()
+            for r in top5_rows
         ],
     }
 
@@ -882,8 +882,15 @@ async def delete_log(
         "source": log.source,
     }
 
-    # Xóa
-    await session.execute(delete(DutyLog).where(DutyLog.id == log_id))
+    # Xóa — verify rowcount để bắt race condition (log bị xoá bởi tiến trình
+    # khác giữa lúc query select ở trên và delete ở đây). Tránh ghi audit log
+    # giả "đã xoá X" khi thực ra delete no-op.
+    delete_result = await session.execute(delete(DutyLog).where(DutyLog.id == log_id))
+    if delete_result.rowcount == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="Log đã bị xoá bởi tiến trình khác giữa lúc kiểm tra và xoá. Vui lòng tải lại trang.",
+        )
 
     session.add(AuditLog(
         guild_id=guild_id,
