@@ -4,7 +4,7 @@ Dùng chung 1 model với cột `request_type` phân biệt.
 """
 from datetime import datetime, date
 from sqlalchemy import (
-    BigInteger, String, Date, DateTime, Text, Index, JSON,
+    BigInteger, String, Date, DateTime, Text, Index, JSON, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base
@@ -46,8 +46,10 @@ class LeaveRequest(Base):
 
     reason: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Discord message ID nơi staff vote (để bot listen react)
-    vote_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
+    # Discord message ID nơi staff vote (để bot listen react).
+    # Unique constraint chuyển sang partial index (migration 009): chỉ
+    # enforce trên non-null. Xem __table_args__ bên dưới.
+    vote_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     vote_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     # Ai duyệt (Discord user ID), khi nào, ghi chú
@@ -71,6 +73,14 @@ class LeaveRequest(Base):
         Index("ix_leave_guild_user", "guild_id", "user_id"),
         Index("ix_leave_guild_status", "guild_id", "status"),
         Index("ix_leave_guild_dates", "guild_id", "start_date", "end_date"),
+        # Partial unique index — chỉ enforce uniqueness khi vote_message_id
+        # không null. Đa số đơn sau xử lý có thể null vote_message_id.
+        Index(
+            "ix_leave_vote_msg_unique",
+            "vote_message_id",
+            unique=True,
+            postgresql_where=text("vote_message_id IS NOT NULL"),
+        ),
     )
 
     def __repr__(self) -> str:

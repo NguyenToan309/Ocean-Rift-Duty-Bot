@@ -350,6 +350,24 @@ async def _save_duty_log(
         created_at=utcnow(),
     )
     session.add(log)
+    # Flush ngay để bắt IntegrityError do race condition: 2 request đồng thời
+    # có thể cùng qua 3 tầng check ở application (vì check không atomic), nhưng
+    # chỉ 1 INSERT thành công nhờ DB unique constraint (source_message_id /
+    # uq_duty_log_entry). Catch lỗi và trả message thân thiện thay vì 500 chung.
+    try:
+        await session.flush()
+    except IntegrityError as e:
+        await session.rollback()
+        err_msg = str(getattr(e, "orig", None) or e)
+        if "source_message_id" in err_msg:
+            raise ValueError("Log này đã được lưu trước đó (duplicate message)")
+        if "uq_duty_log_entry" in err_msg:
+            raise ValueError(
+                f"Ca trực **{username}** từ "
+                f"`{started_at.strftime('%H:%M %d/%m/%Y')}` đến "
+                f"`{ended_at.strftime('%H:%M %d/%m/%Y')}` đã được lưu rồi."
+            )
+        raise
     return log
 
 
