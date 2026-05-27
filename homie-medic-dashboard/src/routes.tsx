@@ -10,6 +10,7 @@ import { ResignRequestsPage } from './pages/ResignRequestsPage';
 import { RankingsPage } from './pages/RankingsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AdminOverviewPage } from './pages/AdminOverviewPage';
 import { NotFoundPage, ForbiddenPage, ServerErrorPage } from './pages/ErrorPages';
 import { useAuth } from './contexts/AuthContext';
 import type { ReactNode } from 'react';
@@ -25,6 +26,24 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   }
   if (state === 'anon' || state === 'need_2fa') {
     return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
+
+function BotOwnerRoute({ children }: { children: ReactNode }) {
+  const { state, me } = useAuth();
+  if (state === 'loading') {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-sm text-[var(--muted-foreground)]">Đang tải...</div>
+      </div>
+    );
+  }
+  if (state === 'anon' || state === 'need_2fa') {
+    return <Navigate to="/login" replace />;
+  }
+  if (!me?.is_bot_owner) {
+    return <Navigate to="/403" replace />;
   }
   return <>{children}</>;
 }
@@ -47,6 +66,10 @@ export const router = createBrowserRouter([
       { path: 'rankings', Component: RankingsPage },
       { path: 'audit-log', Component: AuditLogPage },
       { path: 'settings', Component: SettingsPage },
+      {
+        path: 'admin/overview',
+        element: <BotOwnerRoute><AdminOverviewPage /></BotOwnerRoute>,
+      },
     ],
   },
   { path: '*', Component: NotFoundPage },

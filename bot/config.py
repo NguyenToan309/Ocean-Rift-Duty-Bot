@@ -6,10 +6,41 @@ Hỗ trợ 2 mode env vars:
 1. Local/VPS: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD (từ .env)
 2. Cloud (Railway/Render/Heroku): DATABASE_URL + REDIS_URL trực tiếp
 """
+import logging
 import os
 from functools import lru_cache
 from urllib.parse import urlparse, unquote
 from dotenv import load_dotenv
+
+_config_logger = logging.getLogger(__name__)
+
+
+def _parse_bot_owner_ids(raw: str) -> set[int]:
+    """Parse env BOT_OWNER_IDS="123,456" → {123, 456}.
+
+    - Bỏ qua whitespace giữa các giá trị
+    - Bỏ qua empty value (vd "1,,2" → {1, 2})
+    - Skip + log warning với value không phải int (vd "abc,123" → {123})
+    - Empty string hoặc None → set rỗng + warning
+    """
+    if not raw or not raw.strip():
+        _config_logger.warning(
+            "BOT_OWNER_IDS chưa được set — endpoint /api/admin/* sẽ 403 cho mọi user. "
+            "Thêm vào .env: BOT_OWNER_IDS=<discord_user_id>"
+        )
+        return set()
+    out: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            out.add(int(token))
+        except ValueError:
+            _config_logger.warning(
+                f"BOT_OWNER_IDS chứa giá trị không phải số nguyên: {token!r} — bỏ qua"
+            )
+    return out
 
 
 # ─── Patch starlette.config để tránh lỗi cp1252 đọc .env trên Windows ────────
@@ -170,6 +201,10 @@ class Settings:
     # ----- File upload giới hạn -----
     MAX_FILE_SIZE_MB: int = 5
     ALLOWED_IMAGE_MIME: frozenset[str] = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+    # ----- Bot owner — quyền xem /api/admin/* -----
+    # Comma-separated Discord user ID. Để trống = không ai có quyền admin.
+    BOT_OWNER_IDS: set[int] = _parse_bot_owner_ids(os.getenv("BOT_OWNER_IDS", ""))
 
 
 @lru_cache(maxsize=1)

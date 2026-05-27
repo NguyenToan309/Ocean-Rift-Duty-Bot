@@ -103,6 +103,37 @@ async def require_auth(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+def is_bot_owner(user_payload: dict) -> bool:
+    """Kiểm tra user có nằm trong BOT_OWNER_IDS không (helper non-raising)."""
+    try:
+        return int(user_payload["sub"]) in settings.BOT_OWNER_IDS
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+async def require_bot_owner(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: chỉ cho phép user có discord_id ∈ settings.BOT_OWNER_IDS.
+
+    - Nếu BOT_OWNER_IDS chưa config (set rỗng) → 500 (config error).
+    - Nếu user không trong list → 403.
+    """
+    if not settings.BOT_OWNER_IDS:
+        logger.critical(
+            "BOT_OWNER_IDS chưa được set trong .env nhưng có request vào /api/admin/* "
+            f"từ user_id={user.get('sub')}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Hệ thống chưa cấu hình bot owner. Liên hệ quản trị viên.",
+        )
+    if not is_bot_owner(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Endpoint này chỉ dành cho bot owner.",
+        )
+    return user
+
+
 async def fetch_member_role_ids(guild_id: int, user_id: int) -> list[int] | None:
     """
     Lấy danh sách role ID của user trong guild từ Discord API.
