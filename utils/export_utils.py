@@ -13,6 +13,26 @@ from openpyxl.utils import get_column_letter
 from bot.config import settings
 from bot.utils.time_utils import minutes_to_hhmm
 
+
+# Các ký tự "leading" mà Excel/LibreOffice/Numbers diễn dịch là công thức.
+# Username Discord do user kiểm soát → attacker có thể đặt tên kiểu
+# "=cmd|'/c calc'!A1" để khi staff mở CSV thì shell chạy. Mọi cell text
+# user-controlled phải đi qua _sanitize_cell trước khi vào DataFrame.
+_CSV_INJECTION_PREFIX = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_cell(value):
+    """Prepend dấu ' nếu chuỗi bắt đầu bằng ký tự công thức.
+
+    Áp dụng cho mọi cell text có thể chứa input user (username, period_label,
+    raw_text…). Giá trị non-string trả nguyên (số, datetime đã format từ trước).
+    """
+    if not isinstance(value, str):
+        return value
+    if value.startswith(_CSV_INJECTION_PREFIX):
+        return "'" + value
+    return value
+
 # Mapping tên cột kỹ thuật → tên hiển thị tiếng Việt
 EXPORT_COLUMNS: dict[str, str] = {
     "guild_id":        "Guild ID",
@@ -36,14 +56,15 @@ def logs_to_dataframe(logs: list, guild_name: str) -> pd.DataFrame:
     Chuyển list DutyLog ORM objects → DataFrame chuẩn.
     logs: list của DutyLog instances.
     """
+    safe_guild_name = _sanitize_cell(guild_name)
     rows = []
     for log in logs:
         dt = log.started_at
         rows.append({
             "guild_id":         log.guild_id,
-            "guild_name":       guild_name,
+            "guild_name":       safe_guild_name,
             "user_id":          log.user_id,
-            "username":         log.username,
+            "username":         _sanitize_cell(log.username),
             "started_at":       dt.strftime("%d/%m/%Y %H:%M:%S"),
             "ended_at":         log.ended_at.strftime("%d/%m/%Y %H:%M:%S"),
             "duration_minutes": log.duration_minutes,
@@ -76,8 +97,10 @@ def generate_excel_bytes(df: pd.DataFrame, period_label: str) -> bytes:
         df.to_excel(writer, index=False, sheet_name="Duty Log", startrow=1)
         ws = writer.sheets["Duty Log"]
 
-        # Dòng tiêu đề
-        title_cell = ws.cell(row=1, column=1, value=f"Báo cáo LOG DUTY — {period_label}")
+        # Dòng tiêu đề — period_label có thể chứa input user (date_from/date_to),
+        # sanitize để chặn CSV/Excel formula injection.
+        safe_label = _sanitize_cell(period_label)
+        title_cell = ws.cell(row=1, column=1, value=f"Báo cáo LOG DUTY — {safe_label}")
         title_cell.font = Font(bold=True, size=13, color="FFFFFF")
         title_cell.fill = PatternFill("solid", fgColor="5865F2")
         title_cell.alignment = Alignment(horizontal="left", vertical="center")
