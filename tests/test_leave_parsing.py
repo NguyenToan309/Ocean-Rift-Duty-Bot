@@ -23,11 +23,16 @@ class TestParseDate:
         assert _parse_date("01/05/26") == date(2026, 5, 1)
 
     def test_dd_mm_only(self):
-        """DD/MM (không năm) → year hiện tại"""
+        """DD/MM (không năm) → year hiện tại.
+
+        Chấp nhận year ± 1 để tránh flaky test nếu chạy ngay khoảnh khắc
+        cross năm (test_now và _parse_date có thể đọc datetime.now() ở 2
+        thời điểm khác nhau trong cùng 1 nano-second cuối/đầu năm)."""
+        now_year = datetime.now().year
         result = _parse_date("01/05")
         assert result.day == 1
         assert result.month == 5
-        assert result.year == datetime.now().year
+        assert result.year in (now_year - 1, now_year, now_year + 1)
 
     def test_invalid_format(self):
         with pytest.raises(ValueError):
