@@ -3,6 +3,7 @@ import { Check, X, Clock, FileText, AlertCircle, RotateCcw } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext';
 import { useLeaveList } from '../hooks/useApi';
 import { api, type LeaveRequest, formatError } from '../lib/api';
+import { promptNote } from '../lib/promptNote';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -118,18 +119,21 @@ export function LeaveRequestsPage() {
             onRevert={async (e) => {
               e.stopPropagation();
               if (!currentGuildId) return;
-              const reason = window.prompt(
-                `Hoàn tác đơn của ${req.username}?\n` +
-                `Trạng thái hiện tại: ${req.status === 'APPROVED' ? 'Đã duyệt' : 'Từ chối'}\n\n` +
-                `LƯU Ý: Nếu là đơn xin out đã duyệt, role Discord ĐÃ GỠ sẽ KHÔNG tự cấp lại.\n\n` +
-                `Lý do hoàn tác (≥3 ký tự):`,
-              );
-              if (!reason || reason.trim().length < 3) {
-                if (reason !== null) alert('Cần ghi lý do ≥3 ký tự.');
+              const reason = await promptNote({
+                title: `Hoàn tác đơn của ${req.username}?`,
+                description:
+                  `Trạng thái hiện tại: ${req.status === 'APPROVED' ? 'Đã duyệt' : 'Từ chối'} → sẽ chuyển về Chờ duyệt. ` +
+                  `LƯU Ý: nếu là đơn xin out đã duyệt, role Discord ĐÃ GỠ sẽ KHÔNG tự cấp lại.`,
+                placeholder: 'VD: sai sót khi xét duyệt, cần xem xét lại...',
+                minLength: 3,
+                destructive: true,
+                confirmLabel: 'Hoàn tác',
+              });
+              if (reason === null) {
                 return;
               }
               try {
-                await api.leaveRevert(currentGuildId, req.id, reason.trim());
+                await api.leaveRevert(currentGuildId, req.id, reason);
                 reqQ.refetch();
               } catch (err) {
                 alert('Lỗi: ' + formatError(err));
@@ -311,19 +315,22 @@ function LeaveDetailDrawer({
               variant="outline"
               onClick={async () => {
                 if (!guildId) return;
-                const reason = window.prompt(
-                  `Hoàn tác đơn ${req.username}?\n` +
-                  `Trạng thái: ${req.status === 'APPROVED' ? 'Đã duyệt' : 'Từ chối'} → Chờ duyệt\n\n` +
-                  `LƯU Ý: Nếu là đơn xin out đã duyệt, role Discord ĐÃ GỠ sẽ KHÔNG tự cấp lại.\n\n` +
-                  `Lý do hoàn tác (≥3 ký tự):`,
-                );
-                if (!reason || reason.trim().length < 3) {
-                  if (reason !== null) alert('Cần ghi lý do ≥3 ký tự.');
+                const reason = await promptNote({
+                  title: `Hoàn tác đơn ${req.username}?`,
+                  description:
+                    `Trạng thái: ${req.status === 'APPROVED' ? 'Đã duyệt' : 'Từ chối'} → Chờ duyệt. ` +
+                    `LƯU Ý: nếu là đơn xin out đã duyệt, role Discord ĐÃ GỠ sẽ KHÔNG tự cấp lại.`,
+                  placeholder: 'VD: sai sót khi xét duyệt, cần xem xét lại...',
+                  minLength: 3,
+                  destructive: true,
+                  confirmLabel: 'Hoàn tác',
+                });
+                if (reason === null) {
                   return;
                 }
                 setSubmitting(true);
                 try {
-                  await api.leaveRevert(guildId, req.id, reason.trim());
+                  await api.leaveRevert(guildId, req.id, reason);
                   onDecided();
                 } catch (err) {
                   setError(formatError(err));

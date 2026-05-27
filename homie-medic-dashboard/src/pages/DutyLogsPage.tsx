@@ -6,6 +6,7 @@ import { useOutletContext } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLogs } from '../hooks/useApi';
 import { api, formatError, type DutyLog } from '../lib/api';
+import { promptNote } from '../lib/promptNote';
 import { useAvatars } from '../contexts/AvatarContext';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -113,13 +114,17 @@ export function DutyLogsPage() {
 
   const onDelete = async (logId: number, username: string) => {
     if (!currentGuildId) return;
-    const note = window.prompt(`Xóa log của ${username}?\n\nLý do (≥3 ký tự):`);
-    if (!note || note.trim().length < 3) {
-      alert('Bắt buộc ghi lý do ≥3 ký tự.');
-      return;
-    }
+    const note = await promptNote({
+      title: `Xoá log của ${username}?`,
+      description: 'Log sẽ bị xoá vĩnh viễn. Audit log sẽ ghi snapshot trước khi xoá để phục hồi nếu cần.',
+      placeholder: 'VD: log sai giờ, đã có log khác chính xác hơn...',
+      minLength: 3,
+      destructive: true,
+      confirmLabel: 'Xoá log',
+    });
+    if (note === null) return;
     try {
-      await api.deleteLog(currentGuildId, logId, note.trim());
+      await api.deleteLog(currentGuildId, logId, note);
       logsQ.refetch();
     } catch (err) {
       alert('Lỗi: ' + formatError(err));

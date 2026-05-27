@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { api, type SystemRole, formatError } from '../lib/api';
+import { promptNote } from '../lib/promptNote';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -226,12 +227,17 @@ function PositionRoleTab({ guildId }: { guildId: string | null }) {
 
   const save = async () => {
     if (!guildId) return;
-    const note = window.prompt('Lý do cập nhật map chức vụ → quyền (≥3 ký tự):');
-    if (!note || note.trim().length < 3) return;
+    const note = await promptNote({
+      title: 'Cập nhật map chức vụ → quyền hệ thống',
+      description: 'Nhập lý do thay đổi để ghi audit log. Tối thiểu 3 ký tự.',
+      placeholder: 'VD: tổ chức tái cơ cấu phòng ban, đổi role sau cuộc họp ban...',
+      minLength: 3,
+    });
+    if (note === null) return;
     setSaving(true);
     setError(null);
     try {
-      const r = await api.staffUpdatePositionRoleMap(guildId, draft as any, note.trim());
+      const r = await api.staffUpdatePositionRoleMap(guildId, draft as any, note);
       setOriginal(r.position_role_map);
     } catch (err) {
       setError(formatError(err));
@@ -464,12 +470,17 @@ function NotificationsTab({ guildId }: { guildId: string | null }) {
 
   const save = async () => {
     if (!guildId) return;
-    const note = window.prompt('Lý do cập nhật thông báo (≥3 ký tự):');
-    if (!note || note.trim().length < 3) return;
+    const note = await promptNote({
+      title: 'Cập nhật cấu hình thông báo',
+      description: 'Nhập lý do thay đổi để ghi audit log. Tối thiểu 3 ký tự.',
+      placeholder: 'VD: tắt nhắc burnout theo yêu cầu admin...',
+      minLength: 3,
+    });
+    if (note === null) return;
     setSaving(true);
     setError(null);
     try {
-      const r = await api.notificationSettingsUpdate(guildId, settings, note.trim());
+      const r = await api.notificationSettingsUpdate(guildId, settings, note);
       setOriginal(r.notification_settings);
       setSavedAt(new Date());
     } catch (err) {
