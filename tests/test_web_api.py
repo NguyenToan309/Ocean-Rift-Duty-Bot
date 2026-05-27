@@ -42,12 +42,27 @@ def override_db():
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def allow_testserver_origin():
+    """CSRF guard chỉ cho whitelist Origin. Thêm http://testserver trong test
+    + revert sau khi xong để không leak sang test khác."""
+    import web.main as web_main
+    added = "http://testserver" not in web_main._ALLOWED_ORIGINS_SET
+    if added:
+        web_main._ALLOWED_ORIGINS_SET.add("http://testserver")
+    yield
+    if added:
+        web_main._ALLOWED_ORIGINS_SET.discard("http://testserver")
+
+
 @pytest.fixture
 async def client(override_db):
-    """httpx.AsyncClient kết nối đến app test"""
+    """httpx.AsyncClient kết nối đến app test. Gửi sẵn Origin header để
+    qua csrf_origin_guard middleware cho mọi POST/PUT/DELETE."""
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://testserver",
+        headers={"Origin": "http://testserver"},
     ) as ac:
         yield ac
 
