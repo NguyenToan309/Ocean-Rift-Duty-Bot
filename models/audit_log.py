@@ -46,6 +46,9 @@ class AuditAction:
     STAFF_REMOVED = "STAFF_REMOVED"      # Gỡ khỏi danh sách (deactivate)
     STAFF_ROLE_SYNCED = "STAFF_ROLE_SYNCED"  # Auto-sync Discord role theo chức vụ
     POSITION_ROLE_MAP_CHANGED = "POSITION_ROLE_MAP_CHANGED"  # Admin đổi config map
+    # Bot owner admin overview
+    ADMIN_OVERVIEW_VIEWED = "ADMIN_OVERVIEW_VIEWED"      # Owner xem trang /admin/overview
+    ADMIN_OVERVIEW_REFRESHED = "ADMIN_OVERVIEW_REFRESHED"  # Owner ấn refresh cache
 
 
 class AuditLog(Base):

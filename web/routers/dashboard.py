@@ -28,10 +28,16 @@ async def get_me(
     request: Request,
     current_user: dict = Depends(require_auth),
 ):
-    """Trả về user info từ JWT — dùng cho frontend hiển thị + check ownership"""
+    """Trả về user info từ JWT — dùng cho frontend hiển thị + check ownership.
+
+    Field `is_bot_owner` cho frontend biết user có quyền vào /admin/* không
+    để hiển thị/ẩn link "Admin" trong navigation.
+    """
+    from web.middleware.auth_guard import is_bot_owner
     return {
         "user_id": str(current_user.get("sub")),
         "username": current_user.get("username", ""),
+        "is_bot_owner": is_bot_owner(current_user),
     }
 
 

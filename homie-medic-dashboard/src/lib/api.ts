@@ -84,6 +84,66 @@ export interface Me {
   global_name: string | null;
   avatar_url: string | null;
   is_2fa_enabled: boolean;
+  is_bot_owner: boolean;
+}
+
+// ----- ADMIN OVERVIEW (bot owner only) -----
+export interface AdminInstallation {
+  guild_id: string;
+  guild_name: string;
+  icon_url: string | null;
+  banner_url: string | null;
+  member_count: number | null;
+  presence_count: number | null;
+  boost_level: number | null;
+  boost_count: number | null;
+  features: string[];
+  preferred_locale: string | null;
+  owner: { id: string; username: string; avatar_url: string | null } | null;
+  inviter: { id: string; username: string } | null;
+  bot_joined_at: string | null;
+  bot_permissions: string | null;
+  setup_status: 'configured' | 'pending';
+  setup_at: string | null;
+  log_channel_id: string | null;
+  timezone: string | null;
+  is_active: boolean | null;
+  role_map_count: number;
+  duty_log_count: number;
+  last_duty_log_at: string | null;
+  unique_users_logged: number;
+}
+
+export interface AdminAuthorization {
+  discord_id: string;
+  username: string;
+  discriminator: string | null;
+  avatar_url: string | null;
+  first_login_at: string | null;
+  last_login_at: string | null;
+  last_login_ip: string | null;
+  is_2fa_enabled: boolean;
+  failed_login_attempts: number;
+  locked_until: string | null;
+  total_logins: number;
+  last_action_at: string | null;
+}
+
+export interface AdminOverview {
+  installations: AdminInstallation[];
+  authorizations: AdminAuthorization[];
+  totals: {
+    total_installs: number;
+    configured: number;
+    pending: number;
+    total_authorizations: number;
+    with_2fa: number;
+    active_last_7d: number;
+    total_duty_logs: number;
+    unique_users_global: number;
+  };
+  fetched_at: string;
+  cache_hit: boolean;
 }
 
 export interface Guild {
@@ -292,7 +352,7 @@ function diffDays(start?: string | null, end?: string | null): number {
 export const api = {
   // ----- AUTH -----
   me: async (): Promise<Me> => {
-    const r = await apiFetch<{ user_id: string; username: string; global_name?: string | null; avatar_url?: string | null; is_2fa_enabled?: boolean }>(
+    const r = await apiFetch<{ user_id: string; username: string; global_name?: string | null; avatar_url?: string | null; is_2fa_enabled?: boolean; is_bot_owner?: boolean }>(
       '/api/dashboard/me',
     );
     return {
@@ -302,8 +362,16 @@ export const api = {
       global_name: r.global_name ?? null,
       avatar_url: r.avatar_url ?? null,
       is_2fa_enabled: r.is_2fa_enabled ?? false,
+      is_bot_owner: r.is_bot_owner ?? false,
     };
   },
+
+  // ----- ADMIN (bot owner only) -----
+  adminOverview: () => apiFetch<AdminOverview>('/api/admin/overview'),
+  adminRefresh: () =>
+    apiFetch<{ refreshed: boolean; ts: string }>('/api/admin/overview/refresh', {
+      method: 'POST',
+    }),
 
   myGuilds: async (): Promise<Guild[]> => {
     const resp = await apiFetch<{

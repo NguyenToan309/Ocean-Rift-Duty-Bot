@@ -165,6 +165,115 @@ async def batch_resolve_user_info(user_ids: set[int]) -> dict[int, dict]:
     return out
 
 
+# ─── Admin overview helpers ──────────────────────────────────────────────────
+# Mỗi helper có cache riêng (key prefix theo type) để partial refresh hiệu quả.
+# TTL 300s (5 phút) — match cache global của /api/admin/overview.
+
+_ADMIN_TTL = 300.0
+
+
+async def fetch_bot_guilds_with_counts() -> list[dict]:
+    """GET /users/@me/guilds?with_counts=true.
+
+    Trả list[{id, name, icon, owner, permissions, approximate_member_count,
+    approximate_presence_count}]. Discord cap 200 guild/call (đủ cho hầu hết bot
+    nhỏ-vừa). Cache 5 phút.
+
+    Trả [] nếu Discord 401/429/timeout — caller xử lý.
+    """
+    key = ("admin_bot_guilds", 0)
+    now = time.time()
+    async with _lock:
+        cached = _cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0] or []   # type: ignore
+    data = await _discord_get("users/@me/guilds?with_counts=true")
+    result = data if isinstance(data, list) else []
+    async with _lock:
+        _cache[key] = (result, now + _ADMIN_TTL)
+    return result
+
+
+async def fetch_guild_detail(guild_id: int) -> Optional[dict]:
+    """GET /guilds/{id} — chi tiết guild: features, banner, boost_level, locale.
+
+    Cache 5 phút. Trả None nếu fail (bot không in guild, 403, timeout).
+    """
+    key = ("admin_guild_detail", guild_id)
+    now = time.time()
+    async with _lock:
+        cached = _cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0]   # type: ignore
+    data = await _discord_get(f"guilds/{guild_id}")
+    async with _lock:
+        _cache[key] = (data, now + _ADMIN_TTL)
+    return data
+
+
+async def fetch_guild_bot_member(guild_id: int, bot_user_id: int) -> Optional[dict]:
+    """GET /guilds/{guild_id}/members/{bot_user_id} → {joined_at, roles, nick}.
+
+    Cache 5 phút. Trả None nếu bot thiếu perm hoặc API fail.
+    """
+    key = ("admin_bot_member", guild_id)
+    now = time.time()
+    async with _lock:
+        cached = _cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0]   # type: ignore
+    data = await _discord_get(f"guilds/{guild_id}/members/{bot_user_id}")
+    async with _lock:
+        _cache[key] = (data, now + _ADMIN_TTL)
+    return data
+
+
+async def fetch_guild_audit_inviter(guild_id: int, bot_user_id: int) -> Optional[int]:
+    """Tìm user đã add bot vào guild qua audit log.
+
+    Strategy: GET /guilds/{id}/audit-logs?action_type=28&limit=10
+    (action_type 28 = BOT_ADD). Filter target_id == bot_user_id.
+
+    Trả discord_id của inviter (int), hoặc None nếu:
+    - Bot thiếu VIEW_AUDIT_LOG (Discord 403)
+    - Audit log entry expire (>90 ngày)
+    - Bot được add trước khi entry log được Discord ghi
+    """
+    key = ("admin_audit_inviter", guild_id)
+    now = time.time()
+    async with _lock:
+        cached = _cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0]   # type: ignore
+    data = await _discord_get(f"guilds/{guild_id}/audit-logs?action_type=28&limit=10")
+    inviter_id: Optional[int] = None
+    if isinstance(data, dict):
+        entries = data.get("audit_log_entries") or []
+        for entry in entries:
+            target = entry.get("target_id")
+            if str(target) == str(bot_user_id):
+                try:
+                    inviter_id = int(entry.get("user_id"))
+                    break
+                except (TypeError, ValueError):
+                    continue
+    async with _lock:
+        _cache[key] = (inviter_id, now + _ADMIN_TTL)
+    return inviter_id
+
+
+def invalidate_admin_cache() -> None:
+    """Xoá toàn bộ cache admin overview để force refresh từ Discord.
+
+    Áp dụng cho key prefix: admin_bot_guilds, admin_guild_detail,
+    admin_bot_member, admin_audit_inviter.
+    """
+    prefixes = {"admin_bot_guilds", "admin_guild_detail", "admin_bot_member", "admin_audit_inviter"}
+    for k in list(_cache.keys()):
+        if k[0] in prefixes:
+            _cache.pop(k, None)
+
+
 async def enrich_audit_details(
     guild_id: int,
     items: list[dict],
