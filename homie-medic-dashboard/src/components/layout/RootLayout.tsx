@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar';
 import { Topbar, type Period } from './Topbar';
 import { NotificationCenter } from './NotificationCenter';
 import { RealtimeIndicator } from '../shared/misc';
+import { PromptNoteHost } from '../shared/PromptNoteHost';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLeavePending } from '../../hooks/useApi';
 
@@ -48,6 +49,8 @@ export function RootLayout() {
       />
 
       <RealtimeIndicator state="connected" />
+
+      <PromptNoteHost />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useStaffList } from '../hooks/useApi';
 import { api, type StaffMember, type SystemRole, formatError } from '../lib/api';
+import { promptNote } from '../lib/promptNote';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -346,14 +347,18 @@ function StaffEditModal({
 
   const remove = async () => {
     if (!guildId || !staff) return;
-    const note = window.prompt(`Gỡ ${staff.username} khỏi danh sách?\n\nLý do (≥3 ký tự):`);
-    if (!note || note.trim().length < 3) {
-      alert('Cần ghi lý do (≥3 ký tự).');
-      return;
-    }
+    const note = await promptNote({
+      title: `Gỡ ${staff.username} khỏi danh sách nhân sự?`,
+      description: 'Nhân viên sẽ chuyển sang trạng thái không hoạt động (soft-delete). Có thể khôi phục sau.',
+      placeholder: 'VD: nghỉ việc theo nguyện vọng, chuyển công tác...',
+      minLength: 3,
+      destructive: true,
+      confirmLabel: 'Gỡ khỏi danh sách',
+    });
+    if (note === null) return;
     setSaving(true);
     try {
-      await api.staffRemove(guildId, staff.user_id, note.trim(), false);
+      await api.staffRemove(guildId, staff.user_id, note, false);
       onSaved();
     } catch (err) {
       setError(formatError(err));
@@ -515,14 +520,16 @@ function PositionRoleMapCard({ guildId }: { guildId: string | null }) {
 
   const save = async () => {
     if (!guildId) return;
-    const note = window.prompt('Lý do cập nhật map chức vụ → quyền (≥3 ký tự):');
-    if (!note || note.trim().length < 3) {
-      alert('Cần ghi lý do ≥3 ký tự.');
-      return;
-    }
+    const note = await promptNote({
+      title: 'Cập nhật map chức vụ → quyền',
+      description: 'Nhập lý do thay đổi để ghi audit log. Tối thiểu 3 ký tự.',
+      placeholder: 'VD: tái cơ cấu phòng ban, mở rộng quyền cho khoa nội...',
+      minLength: 3,
+    });
+    if (note === null) return;
     setSaving(true);
     try {
-      const r = await api.staffUpdatePositionRoleMap(guildId, draft as any, note.trim());
+      const r = await api.staffUpdatePositionRoleMap(guildId, draft as any, note);
       setOriginal(r.position_role_map);
       setSavedAt(new Date());
     } catch (err) {

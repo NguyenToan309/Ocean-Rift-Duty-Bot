@@ -6,6 +6,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useScheduleCalendar, useScheduleGrid, useStaffList } from '../hooks/useApi';
 import { api, formatError } from '../lib/api';
+import { promptNote } from '../lib/promptNote';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -456,14 +457,18 @@ function ScheduleEditModal({
 
   const remove = async () => {
     if (!guildId || !slot.id) return;
-    const note = window.prompt(`Xóa ca trực ${slot.start_time}-${slot.end_time}?\n\nLý do (≥3 ký tự):`);
-    if (!note || note.trim().length < 3) {
-      alert('Cần ghi lý do ≥3 ký tự.');
-      return;
-    }
+    const note = await promptNote({
+      title: `Xoá ca trực ${slot.start_time} – ${slot.end_time}?`,
+      description: 'Ca trực sẽ bị xoá khỏi lịch. Audit log ghi snapshot để xem lại.',
+      placeholder: 'VD: nhân viên xin đổi ca, lịch trùng...',
+      minLength: 3,
+      destructive: true,
+      confirmLabel: 'Xoá ca',
+    });
+    if (note === null) return;
     setSaving(true);
     try {
-      await api.scheduleDelete(guildId, slot.id, note.trim());
+      await api.scheduleDelete(guildId, slot.id, note);
       onSaved();
     } catch (err) {
       setError(formatError(err));
