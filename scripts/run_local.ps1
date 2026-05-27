@@ -18,6 +18,12 @@ $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $PSScriptRoot
 Set-Location $ROOT
 
+# Force Python UTF-8 mode để mọi source code .py tiếng Việt được đọc chuẩn.
+# Không set sẽ dùng cp1252 trên Windows VI → string literal mojibake khi gửi
+# Discord (vd "Quét" thành "QuÃ©t"). Áp dụng cho tất cả child processes.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 # Kiem tra .env
 if (-not (Test-Path ".env")) {
     Write-Host "[ERROR] Khong tim thay file .env!" -ForegroundColor Red
@@ -65,8 +71,10 @@ if ($runBot -and $runWeb) {
     Write-Host ""
     Write-Host "[STEP 2/3] Khoi dong Homie Medic Bot + Web Dashboard..." -ForegroundColor Cyan
 
-    # Chay bot trong cua so moi
-    $botCmd = "Set-Location '$ROOT'; `$Host.UI.RawUI.WindowTitle = 'Homie Medic - BOT'; Write-Host '[BOT] Khoi dong...' -ForegroundColor Blue; python -m bot.main"
+    # Chay bot trong cua so moi.
+    # PYTHONUTF8=1 phai set TRONG cua so moi vi Start-Process khong tu inherit
+    # env vars cho new console host.
+    $botCmd = "Set-Location '$ROOT'; `$env:PYTHONUTF8='1'; `$env:PYTHONIOENCODING='utf-8'; `$Host.UI.RawUI.WindowTitle = 'Homie Medic - BOT'; Write-Host '[BOT] Khoi dong...' -ForegroundColor Blue; python -m bot.main"
     Start-Process powershell -ArgumentList "-NoExit", "-Command", $botCmd
 
     # Chay web trong cua so hien tai
