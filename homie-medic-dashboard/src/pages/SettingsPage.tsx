@@ -102,32 +102,7 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="roles">
-          <Card className="p-6 max-w-3xl">
-            <h3 className="font-semibold mb-2">Map Discord Role → System Role</h3>
-            <p className="text-sm text-[var(--muted-foreground)] mb-4">
-              Mỗi role hệ thống được ánh xạ tới 1 Discord role thật. Bot kiểm tra role này khi check quyền.
-            </p>
-            {(['DUTY_ADMIN', 'DUTY_MOD', 'DUTY_MEMBER'] as const).map(sysRole => (
-              <div key={sysRole} className="flex items-center gap-3 py-3 border-b border-[var(--border)] last:border-0">
-                <div className="flex-1">
-                  <p className="text-sm font-bold">{sysRole}</p>
-                  <p className="text-[10px] text-[var(--muted-foreground)]">
-                    {sysRole === 'DUTY_ADMIN' ? 'Toàn quyền (Viện Trưởng/Viện Phó)' :
-                     sysRole === 'DUTY_MOD' ? 'Quản lý (Thư ký, Trưởng khoa)' :
-                     'Member thường (Bác sĩ)'}
-                  </p>
-                </div>
-                <span className="text-[var(--muted-foreground)]">→</span>
-                <Input
-                  placeholder="Discord Role ID hoặc @role..."
-                  className="font-mono-id w-[260px]"
-                />
-              </div>
-            ))}
-            <p className="text-xs text-[var(--muted-foreground)] mt-3 p-3 bg-[var(--info)]/5 rounded-lg border-l-2 border-[var(--info)]">
-              💡 Tip: Trong Discord chạy <code className="bg-[var(--muted)] px-1 rounded">/setup role</code> để gán dễ hơn.
-            </p>
-          </Card>
+          <RoleMapTab guildId={currentGuildId} guildName={currentGuild?.name || ''} />
         </TabsContent>
 
         <TabsContent value="positions">
@@ -213,16 +188,39 @@ function PositionRoleTab({ guildId }: { guildId: string | null }) {
   const [original, setOriginal] = useState<Record<string, SystemRole>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Discord role name map — fetch theo guild để dropdown hiển thị
+  // "DUTY_ADMIN — Cốc Chủ Thần Y" thay vì abstract "DUTY_ADMIN" thuần.
+  const [roleNames, setRoleNames] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
-    if (!guildId) return;
+    if (!guildId) {
+      // Reset state khi user logout hoặc chưa pick guild để tránh leak data guild cũ
+      setDraft({});
+      setOriginal({});
+      setRoleNames({});
+      return;
+    }
     api.staffGetPositionRoleMap(guildId)
       .then(r => {
         setOriginal(r.position_role_map || {});
         setDraft(r.position_role_map || {});
       })
       .catch(console.warn);
+    api.setupGetRoles(guildId)
+      .then(r => {
+        const m: Record<string, string | null> = {};
+        for (const k of ['DUTY_ADMIN', 'DUTY_MOD', 'DUTY_MEMBER'] as const) {
+          m[k] = r.role_map[k]?.role_name ?? null;
+        }
+        setRoleNames(m);
+      })
+      .catch(console.warn);
   }, [guildId]);
+
+  const sysRoleLabel = (sys: 'DUTY_ADMIN' | 'DUTY_MOD' | 'DUTY_MEMBER') => {
+    const name = roleNames[sys];
+    return name ? `${sys} — ${name}` : sys;
+  };
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(original);
 
@@ -281,9 +279,9 @@ function PositionRoleTab({ guildId }: { guildId: string | null }) {
               className="w-[160px]"
             >
               <option value="">— Không map —</option>
-              <option value="DUTY_ADMIN">DUTY_ADMIN</option>
-              <option value="DUTY_MOD">DUTY_MOD</option>
-              <option value="DUTY_MEMBER">DUTY_MEMBER</option>
+              <option value="DUTY_ADMIN">{sysRoleLabel('DUTY_ADMIN')}</option>
+              <option value="DUTY_MOD">{sysRoleLabel('DUTY_MOD')}</option>
+              <option value="DUTY_MEMBER">{sysRoleLabel('DUTY_MEMBER')}</option>
             </NativeSelect>
           </div>
         ))}
@@ -312,6 +310,97 @@ function PositionRoleTab({ guildId }: { guildId: string | null }) {
           </Button>
         </div>
       )}
+    </Card>
+  );
+}
+
+// ─── Role Map Tab (Vai trò) — Discord role thật của guild ────────────────────
+
+function RoleMapTab({ guildId, guildName }: { guildId: string | null; guildName: string }) {
+  const [data, setData] = useState<{
+    role_map: Record<'DUTY_ADMIN' | 'DUTY_MOD' | 'DUTY_MEMBER', { role_id: string; role_name: string | null } | null>;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!guildId) {
+      // Reset khi switch sang guild khác (hoặc logout) để không hiển thị data cũ
+      setData(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    api.setupGetRoles(guildId)
+      .then(setData)
+      .catch(err => setError(formatError(err)))
+      .finally(() => setLoading(false));
+  }, [guildId]);
+
+  if (loading) {
+    return (
+      <Card className="p-6 max-w-3xl">
+        <p className="text-sm text-[var(--muted-foreground)]">Đang tải role map của <strong>{guildName}</strong>...</p>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className="p-6 max-w-3xl">
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-[var(--destructive)]/10 text-[var(--destructive)] text-sm">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          {error}
+        </div>
+      </Card>
+    );
+  }
+
+  const rolesDescription: Record<'DUTY_ADMIN' | 'DUTY_MOD' | 'DUTY_MEMBER', string> = {
+    DUTY_ADMIN: 'Toàn quyền — sửa lịch, cấu hình bot, xoá log',
+    DUTY_MOD: 'Quản lý — duyệt đơn nghỉ, xem audit log',
+    DUTY_MEMBER: 'Member thường — chấm công, xem stats cá nhân',
+  };
+
+  return (
+    <Card className="p-6 max-w-3xl">
+      <h3 className="font-semibold mb-2">Map System Role → Discord Role</h3>
+      <p className="text-sm text-[var(--muted-foreground)] mb-4">
+        Mỗi role hệ thống được map tới 1 Discord role thật trong <strong>{guildName || 'guild này'}</strong>.
+        Bot kiểm tra role này khi check quyền.
+      </p>
+
+      <div className="space-y-2">
+        {(['DUTY_ADMIN', 'DUTY_MOD', 'DUTY_MEMBER'] as const).map(sysRole => {
+          const entry = data?.role_map[sysRole] ?? null;
+          return (
+            <div key={sysRole} className="flex items-center gap-3 py-3 border-b border-[var(--border)] last:border-0">
+              <div className="flex-1">
+                <p className="text-sm font-bold">{sysRole}</p>
+                <p className="text-[10px] text-[var(--muted-foreground)]">{rolesDescription[sysRole]}</p>
+              </div>
+              <span className="text-[var(--muted-foreground)]">→</span>
+              <div className="w-[260px] text-right">
+                {entry ? (
+                  <>
+                    <p className="text-sm font-medium">{entry.role_name || '(không resolve được tên)'}</p>
+                    <p className="font-mono text-[10px] text-[var(--muted-foreground)]">{entry.role_id}</p>
+                  </>
+                ) : (
+                  <span className="text-xs text-[var(--muted-foreground)]">— Chưa map —</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-xs text-[var(--muted-foreground)] mt-3 p-3 bg-[var(--info)]/5 rounded-lg border-l-2 border-[var(--info)]">
+        💡 Để sửa, vào Discord chạy <code className="bg-[var(--muted)] px-1 rounded">/setup role admin @role</code> /
+        <code className="bg-[var(--muted)] px-1 rounded">/setup role mod @role</code> /
+        <code className="bg-[var(--muted)] px-1 rounded">/setup role member @role</code>.
+        Slash command có audit log + kiểm tra bot permission tự động.
+      </p>
     </Card>
   );
 }

@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config import settings
 from web.middleware.rate_limit import limiter
-from web.routers import auth, dashboard, export, audit, schedule, leave, realtime, staff, admin
+from web.routers import auth, dashboard, export, audit, schedule, leave, realtime, staff, admin, setup as setup_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -159,6 +159,7 @@ app.include_router(leave.router)
 app.include_router(realtime.router)
 app.include_router(staff.router)
 app.include_router(admin.router)
+app.include_router(setup_router.router)
 
 
 # ----- Pages -----
