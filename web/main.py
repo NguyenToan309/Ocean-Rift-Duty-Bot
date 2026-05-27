@@ -66,22 +66,20 @@ _ALLOWED_ORIGINS_SET = {o.rstrip("/") for o in _cors_origins}
 async def csrf_origin_guard(request: Request, call_next):
     """Reject mutation requests có Origin không thuộc whitelist.
 
-    Production: Origin TRỐNG hoặc Origin SAI đều bị reject. Browser luôn gửi
-    Origin trên non-GET requests (trừ một số corner case như link prefetch);
-    request không có Origin trong prod là dấu hiệu CSRF/script lạ.
-
-    DEBUG: cho phép Origin trống để dev dùng curl/httpie/server-to-server.
+    Origin TRỐNG hoặc Origin SAI đều bị reject, kể cả khi DEBUG=true. Browser
+    luôn gửi Origin trên non-GET requests; request không có Origin là dấu hiệu
+    CSRF/script lạ. Dev khi dùng curl/httpie phải set:
+        -H "Origin: http://localhost:3000"
     """
     if request.method not in _SAFE_METHODS:
         origin = request.headers.get("origin", "").rstrip("/")
         if not origin:
-            if not settings.DEBUG:
-                logger.warning(f"CSRF: blocked {request.method} {request.url.path} (no Origin header)")
-                return JSONResponse(
-                    status_code=403,
-                    content={"error": "Thiếu Origin header", "detail": "CSRF protection"},
-                )
-        elif origin not in _ALLOWED_ORIGINS_SET:
+            logger.warning(f"CSRF: blocked {request.method} {request.url.path} (no Origin header)")
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Thiếu Origin header", "detail": "CSRF protection"},
+            )
+        if origin not in _ALLOWED_ORIGINS_SET:
             logger.warning(f"CSRF: blocked {request.method} {request.url.path} from origin={origin}")
             return JSONResponse(
                 status_code=403,
@@ -181,14 +179,21 @@ def _serve_react_index(request: Request) -> FileResponse:
 async def index(request: Request):
     """
     Root. Nếu có cookie access_token hợp lệ → React SPA tự handle (gọi /api/dashboard/me).
-    Nếu cookie expired → xoá rồi serve index để user thấy login.
+    Nếu cookie expired, sai type, hoặc đã bị revoke (jti blacklist) → xoá cookie
+    rồi serve index để user thấy login.
     """
     token = request.cookies.get("access_token")
     invalid_token = False
     if token and not request.query_params.get("require_2fa"):
+        # Dùng decode_token() để áp dụng cùng tập rule như API:
+        # check signature + exp + type=="access" + jti chưa bị blacklist.
+        # Tránh trường hợp cookie zombie (sau logout/2FA reset) vẫn hợp lệ
+        # về cryptography mà không bị xoá.
+        from models.base import AsyncSessionLocal
+        from web.routers.auth import decode_token
         try:
-            from jose import jwt
-            jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            async with AsyncSessionLocal() as session:
+                await decode_token(token, session, expected_type="access")
         except Exception:
             invalid_token = True
 
