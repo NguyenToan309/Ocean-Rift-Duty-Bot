@@ -373,6 +373,17 @@ export const api = {
       method: 'POST',
     }),
 
+  // ----- SETUP — role_map theo guild -----
+  setupGetRoles: (guild_id: string) =>
+    apiFetch<{
+      guild_id: string;
+      guild_name: string;
+      role_map: Record<
+        'DUTY_ADMIN' | 'DUTY_MOD' | 'DUTY_MEMBER',
+        { role_id: string; role_name: string | null } | null
+      >;
+    }>('/api/setup/roles', { query: { guild_id } }),
+
   myGuilds: async (): Promise<Guild[]> => {
     const resp = await apiFetch<{
       guilds: Array<{

@@ -9,6 +9,7 @@ import {
   Trophy,
   ScrollText,
   Settings as SettingsIcon,
+  ShieldCheck,
   Cross,
   ChevronLeft,
   ChevronRight,
@@ -35,8 +36,9 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggleCollapse, pendingLeaves = 0 }: SidebarProps) {
-  const { currentGuild } = useAuth();
+  const { currentGuild, me } = useAuth();
   const isAdmin = currentGuild?.is_admin || false;
+  const isBotOwner = me?.is_bot_owner || false;
 
   return (
     <aside
@@ -109,7 +111,7 @@ export function Sidebar({ collapsed, onToggleCollapse, pendingLeaves = 0 }: Side
           );
         })}
 
-        {/* Admin section */}
+        {/* Admin section — DUTY_ADMIN của guild đang chọn */}
         {isAdmin && (
           <>
             <div className="my-3 border-t border-[var(--sidebar-border)]" />
@@ -130,6 +132,33 @@ export function Sidebar({ collapsed, onToggleCollapse, pendingLeaves = 0 }: Side
               {!collapsed && (
                 <Badge variant="outline" className="text-[9px] px-1.5 py-0">
                   ADMIN
+                </Badge>
+              )}
+            </NavLink>
+          </>
+        )}
+
+        {/* Bot Owner section — chỉ hiển thị khi BOT_OWNER_IDS chứa discord_id */}
+        {isBotOwner && (
+          <>
+            {!isAdmin && <div className="my-3 border-t border-[var(--sidebar-border)]" />}
+            <NavLink
+              to="/admin/overview"
+              className={({ isActive }) =>
+                cn(
+                  'group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-[var(--primary)]/10 text-[var(--primary)]'
+                    : 'text-[var(--sidebar-foreground)]/70 hover:bg-[var(--sidebar-accent)]',
+                )
+              }
+              title={collapsed ? 'Admin Overview' : undefined}
+            >
+              <ShieldCheck className="h-[18px] w-[18px] shrink-0" />
+              {!collapsed && <span className="flex-1 truncate">Admin Overview</span>}
+              {!collapsed && (
+                <Badge variant="destructive" className="text-[9px] px-1.5 py-0">
+                  OWNER
                 </Badge>
               )}
             </NavLink>
