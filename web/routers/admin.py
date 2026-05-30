@@ -28,6 +28,12 @@ from models.audit_log import AuditLog, AuditAction
 from models.duty_log import DutyLog
 from models.guild import GuildConfig
 from models.user import User
+from models.system_setting import (
+    SystemSetting,
+    DEFAULTS as SYS_DEFAULTS,
+    ALLOWED_KEYS as SYS_ALLOWED,
+    MAX_VALUE_LENGTH as SYS_MAX_LEN,
+)
 from web.middleware.auth_guard import require_bot_owner
 from web.middleware.rate_limit import limiter
 from web.utils.discord_resolver import (
@@ -369,6 +375,113 @@ async def get_overview(
     ))
     await session.commit()
     return data
+
+
+@router.get("/system-settings")
+@limiter.limit("30/minute")
+async def get_system_settings(
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_bot_owner),
+):
+    """Trả tất cả setting trong bảng system_settings.
+
+    Key không có trong DB → dùng SYS_DEFAULTS (vd: bảng vừa migrate xong).
+    Response shape: {settings: {key: {value, updated_at, updated_by}}}.
+    """
+    rows = await session.execute(select(SystemSetting))
+    db_map = {s.key: s for s in rows.scalars().all()}
+    result: dict[str, dict] = {}
+    for key in SYS_ALLOWED:
+        s = db_map.get(key)
+        if s:
+            result[key] = {
+                "value": s.value,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+                "updated_by": str(s.updated_by) if s.updated_by else None,
+                "max_length": SYS_MAX_LEN.get(key),
+            }
+        else:
+            result[key] = {
+                "value": SYS_DEFAULTS[key],
+                "updated_at": None,
+                "updated_by": None,
+                "max_length": SYS_MAX_LEN.get(key),
+            }
+    return {"settings": result}
+
+
+@router.put("/system-settings")
+@limiter.limit("10/minute")
+async def update_system_settings(
+    request: Request,
+    payload: dict,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_bot_owner),
+):
+    """Cập nhật 1 hoặc nhiều setting. Body: {updates: {key: value}, note: str}.
+
+    Chỉ key thuộc ALLOWED_KEYS mới được lưu (chặn inject). Value length
+    được validate theo SYS_MAX_LEN.
+    """
+    updates_raw = payload.get("updates") or {}
+    note = (payload.get("note") or "").strip()
+    if not isinstance(updates_raw, dict) or not updates_raw:
+        raise HTTPException(status_code=400, detail="Thiếu trường 'updates' (dict).")
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Phải ghi lý do tối thiểu 3 ký tự.")
+
+    user_id = int(current_user["sub"])
+    username = current_user.get("username", f"user_{user_id}")
+    ip = request.client.host if request.client else None
+
+    changes: dict[str, dict] = {}
+    for key, value in updates_raw.items():
+        if key not in SYS_ALLOWED:
+            raise HTTPException(status_code=400, detail=f"Key không được phép sửa: {key}")
+        if not isinstance(value, str):
+            raise HTTPException(status_code=400, detail=f"Value cho {key} phải là string.")
+        value = value.strip()
+        max_len = SYS_MAX_LEN.get(key, 1000)
+        if len(value) == 0:
+            raise HTTPException(status_code=400, detail=f"Value {key} không được rỗng.")
+        if len(value) > max_len:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Value {key} dài quá {max_len} ký tự.",
+            )
+
+        # Upsert
+        existing = await session.execute(
+            select(SystemSetting).where(SystemSetting.key == key)
+        )
+        row = existing.scalar_one_or_none()
+        if row:
+            before = row.value
+            row.value = value
+            row.updated_by = user_id
+            row.updated_at = utcnow()
+        else:
+            before = None
+            row = SystemSetting(
+                key=key, value=value, updated_by=user_id, updated_at=utcnow()
+            )
+            session.add(row)
+        changes[key] = {"before": before, "after": value}
+
+    # Audit
+    session.add(AuditLog(
+        guild_id=None,
+        user_id=user_id,
+        username=username,
+        action=AuditAction.SYSTEM_SETTINGS_UPDATED,
+        detail={"changes": changes, "note": note},
+        ip_address=ip,
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {"updated": list(changes.keys()), "changes": changes}
 
 
 @router.post("/overview/refresh")

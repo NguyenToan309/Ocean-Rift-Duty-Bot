@@ -384,6 +384,24 @@ export const api = {
       >;
     }>('/api/setup/roles', { query: { guild_id } }),
 
+  // ----- BRANDING — public endpoint, không cần auth -----
+  branding: () => apiFetch<{ system_name: string }>('/api/branding'),
+
+  // ----- ADMIN system settings (bot owner only) -----
+  systemSettingsGet: () =>
+    apiFetch<{
+      settings: Record<
+        'system_name' | 'bot_activity_text',
+        { value: string; updated_at: string | null; updated_by: string | null; max_length: number | null }
+      >;
+    }>('/api/admin/system-settings'),
+
+  systemSettingsUpdate: (updates: Record<string, string>, note: string) =>
+    apiFetch<{ updated: string[]; changes: Record<string, { before: string | null; after: string }> }>(
+      '/api/admin/system-settings',
+      { method: 'PUT', body: { updates, note } },
+    ),
+
   myGuilds: async (): Promise<Guild[]> => {
     const resp = await apiFetch<{
       guilds: Array<{
