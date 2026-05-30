@@ -775,19 +775,40 @@ class LogDutyCog(commands.Cog):
 
     @staticmethod
     def _embed_to_text(embed: discord.Embed) -> str:
-        """Ghép tất cả phần text của embed thành 1 chuỗi"""
+        """Ghép tất cả phần text của embed thành 1 chuỗi.
+
+        QUAN TRỌNG: embed field có structure (name, value) tách rời — webhook
+        gửi LOG DUTY thường để label trong `name` và data trong `value`. Nếu
+        chỉ append name và value tách dòng thì parser sẽ MẤT dấu ":" giữa
+        chúng và regex `Tên\\s*[:：]\\s*(value)` không match.
+        Fix: ghép thành "label: value" trên cùng dòng để giả lập định dạng
+        text mà parser hiểu.
+        """
+        import re as _re
+
+        def _strip_bold(s: str) -> str:
+            # Bỏ markdown bold/italic Discord (**, *, __, _) — webhook gửi log
+            # thường có "**Tên:**" mà parser regex không match nếu còn dấu *.
+            return _re.sub(r"\*+|_+", "", s)
+
         parts: list[str] = []
         if embed.title:
-            parts.append(embed.title)
+            parts.append(_strip_bold(embed.title))
         if embed.description:
-            parts.append(embed.description)
+            parts.append(_strip_bold(embed.description))
         for field in embed.fields:
-            if field.name:
-                parts.append(field.name)
-            if field.value:
-                parts.append(field.value)
+            name = _strip_bold((field.name or "").strip()).strip()
+            value = _strip_bold((field.value or "").strip()).strip()
+            if name and value:
+                # Nếu name đã kết thúc bằng dấu : thì khỏi thêm
+                sep = "" if name.rstrip().endswith((":", "：")) else ":"
+                parts.append(f"{name}{sep} {value}")
+            elif name:
+                parts.append(name)
+            elif value:
+                parts.append(value)
         if embed.footer and embed.footer.text:
-            parts.append(embed.footer.text)
+            parts.append(_strip_bold(embed.footer.text))
         return "\n".join(parts)
 
     @log_group.command(name="upload", description="Upload ảnh LOG DUTY của bạn → OCR tự động lưu")
