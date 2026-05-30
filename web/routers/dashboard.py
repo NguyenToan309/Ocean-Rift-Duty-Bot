@@ -844,6 +844,152 @@ async def list_logs(
     }
 
 
+@router.post("/logs/rebind")
+@limiter.limit("10/minute")
+async def rebind_user(
+    request: Request,
+    payload: dict,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Đổi current_ingame_name trong binding của 1 user.
+
+    Body: {guild_id, target_user_id, new_ingame_name, note}
+    KHÔNG đổi username trong duty_logs cũ — chỉ binding.
+    Quyền: DUTY_ADMIN. Phân biệt hoa thường.
+    """
+    from models.duty_identity_binding import DutyIdentityBinding
+
+    try:
+        guild_id = int(payload.get("guild_id") or 0)
+        target_user_id = int(payload.get("target_user_id") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="guild_id và target_user_id phải là số")
+    new_name = (payload.get("new_ingame_name") or "").strip() if isinstance(payload.get("new_ingame_name"), str) else ""
+    note = (payload.get("note") or "").strip() if isinstance(payload.get("note"), str) else ""
+
+    if guild_id <= 0 or target_user_id <= 0:
+        raise HTTPException(status_code=400, detail="guild_id và target_user_id không hợp lệ")
+    if not new_name:
+        raise HTTPException(status_code=400, detail="new_ingame_name không được rỗng")
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Lý do tối thiểu 3 ký tự")
+    if len(new_name) > 100:
+        raise HTTPException(status_code=400, detail="Tên mới quá dài (tối đa 100 ký tự)")
+
+    user_id = int(current_user["sub"])
+    username = current_user.get("username", f"user_{user_id}")
+
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+
+    row = await session.execute(
+        select(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .where(DutyIdentityBinding.discord_user_id == target_user_id)
+    )
+    binding = row.scalar_one_or_none()
+    if binding is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User {target_user_id} chưa có binding (chưa từng chấm công).",
+        )
+
+    old_name = binding.current_ingame_name
+    if old_name == new_name:
+        raise HTTPException(status_code=400, detail="Tên mới giống tên hiện tại")
+
+    # Conflict check
+    conflict_row = await session.execute(
+        select(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .where(DutyIdentityBinding.current_ingame_name == new_name)
+        .where(DutyIdentityBinding.discord_user_id != target_user_id)
+    )
+    conflict = conflict_row.scalar_one_or_none()
+    if conflict is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tên '{new_name}' đã thuộc user khác (ID {conflict.discord_user_id})",
+        )
+
+    history = list(binding.rebind_history or [])
+    history.append({
+        "from": old_name,
+        "to": new_name,
+        "by": str(user_id),
+        "by_name": username,
+        "at": utcnow().isoformat(),
+        "reason": note,
+        "via": "web",
+    })
+    binding.current_ingame_name = new_name
+    binding.rebind_count = (binding.rebind_count or 0) + 1
+    binding.rebind_history = history
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=user_id,
+        username=username,
+        action=AuditAction.LOG_REBIND,
+        detail={
+            "target_user_id": str(target_user_id),
+            "original_ingame_name": binding.original_ingame_name,
+            "from": old_name,
+            "to": new_name,
+            "reason": note,
+            "via": "web",
+        },
+        ip_address=request.client.host if request.client else None,
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {
+        "success": True,
+        "original_ingame_name": binding.original_ingame_name,
+        "old_name": old_name,
+        "new_name": new_name,
+    }
+
+
+@router.get("/logs/bindings")
+@limiter.limit("30/minute")
+async def list_bindings(
+    request: Request,
+    guild_id: int = Query(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Liệt kê tất cả binding trong guild (cho UI admin xem/so sánh).
+
+    Trả: list[{discord_user_id, original_ingame_name, current_ingame_name,
+    rebind_count, log_count, first_seen_at, last_seen_at, history[]}]
+    Quyền: DUTY_MEMBER trở lên (member tự xem được).
+    """
+    from models.duty_identity_binding import DutyIdentityBinding
+    await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
+
+    rows = await session.execute(
+        select(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .order_by(DutyIdentityBinding.last_seen_at.desc())
+    )
+    items = []
+    for b in rows.scalars().all():
+        items.append({
+            "discord_user_id": str(b.discord_user_id),
+            "original_ingame_name": b.original_ingame_name,
+            "current_ingame_name": b.current_ingame_name,
+            "is_renamed": b.original_ingame_name != b.current_ingame_name,
+            "rebind_count": b.rebind_count or 0,
+            "log_count": b.log_count or 0,
+            "first_seen_at": b.first_seen_at.isoformat() if b.first_seen_at else None,
+            "last_seen_at": b.last_seen_at.isoformat() if b.last_seen_at else None,
+            "history": list(b.rebind_history or []),
+        })
+    return {"items": items}
+
+
 @router.post("/logs/rename")
 @limiter.limit("10/minute")
 async def rename_logs(

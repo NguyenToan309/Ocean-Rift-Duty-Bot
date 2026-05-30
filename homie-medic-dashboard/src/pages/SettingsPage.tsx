@@ -159,9 +159,106 @@ export function SettingsPage() {
               <Button variant="destructive" className="w-full mt-2">Đăng xuất tất cả thiết bị</Button>
             </div>
           </Card>
+
+          {isBotOwner && currentGuildId && (
+            <WipeLogsCard guildId={currentGuildId} guildName={currentGuild?.name || ''} />
+          )}
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+// ─── Wipe Logs Card (Bot Owner only) ────────────────────────────────────────
+
+function WipeLogsCard({ guildId, guildName }: { guildId: string; guildName: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [doneCount, setDoneCount] = useState<number | null>(null);
+
+  const onWipe = async () => {
+    setError(null);
+    setDoneCount(null);
+
+    // Step 1: confirm intent + nhận lý do
+    const reason = await promptNote({
+      title: '⚠️ Xoá toàn bộ duty log của guild?',
+      description:
+        `BẠN SẮP XOÁ TOÀN BỘ duty_logs trong guild "${guildName}" (ID ${guildId}). ` +
+        'Action KHÔNG hoàn tác được. Binding ingame_name sẽ giữ nguyên (log_count reset về 0). ' +
+        'Nhập lý do tối thiểu 3 ký tự.',
+      placeholder: 'VD: làm lại từ đầu sau khi đổi format LOG DUTY...',
+      minLength: 3,
+      destructive: true,
+      confirmLabel: 'Tiếp tục',
+    });
+    if (reason === null) return;
+
+    // Step 2: nhập confirm phrase EXACT
+    const expected = `XOA-${guildId}`;
+    const confirm = await promptNote({
+      title: 'Bước 2/2 — xác nhận lần cuối',
+      description: `Để chắc chắn, gõ CHÍNH XÁC chuỗi sau (case-sensitive):\n\n${expected}`,
+      placeholder: expected,
+      minLength: expected.length,
+      maxLength: expected.length,
+      multiline: false,
+      destructive: true,
+      confirmLabel: 'XOÁ NGAY',
+    });
+    if (confirm === null) return;
+    if (confirm !== expected) {
+      setError(`Phrase sai. Phải gõ chính xác "${expected}".`);
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const r = await api.wipeGuildLogs(guildId, confirm);
+      setDoneCount(r.deleted_logs);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="p-6 max-w-2xl mt-4 border-[var(--destructive)]/40">
+      <div className="flex items-start gap-3">
+        <AlertCircle className="h-5 w-5 text-[var(--destructive)] shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <h3 className="font-semibold text-[var(--destructive)]">⚠️ Vùng nguy hiểm — Bot Owner</h3>
+          <p className="text-xs text-[var(--muted-foreground)] mt-1">
+            Xoá toàn bộ duty_logs của guild <strong>{guildName}</strong>. KHÔNG hoàn tác.
+            Binding ingame_name giữ nguyên (log_count reset 0).
+            Bước 1: nhập lý do. Bước 2: gõ chính xác <code className="bg-[var(--muted)] px-1 rounded">XOA-{guildId}</code>.
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 mt-3 p-3 rounded-lg bg-[var(--destructive)]/10 text-[var(--destructive)] text-sm">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      {doneCount !== null && (
+        <div className="flex items-start gap-2 mt-3 p-3 rounded-lg bg-[var(--success)]/10 text-[var(--success)] text-sm">
+          ✓ Đã xoá {doneCount.toLocaleString('vi-VN')} duty log. Audit log đã ghi event.
+        </div>
+      )}
+
+      <Button
+        variant="destructive"
+        onClick={onWipe}
+        disabled={busy}
+        className="w-full mt-4"
+      >
+        {busy ? 'Đang xoá...' : 'Xoá toàn bộ duty log của guild này'}
+      </Button>
+    </Card>
   );
 }
 

@@ -484,6 +484,86 @@ async def update_system_settings(
     return {"updated": list(changes.keys()), "changes": changes}
 
 
+@router.post("/wipe-logs")
+@limiter.limit("2/hour")
+async def wipe_guild_logs(
+    request: Request,
+    payload: dict,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_bot_owner),
+):
+    """Xoá toàn bộ duty_logs của 1 guild + reset binding.log_count.
+
+    Body: {guild_id: int, confirm_phrase: str}
+    confirm_phrase phải khớp "XOA-{guild_id}" (giống bot slash command).
+
+    Quyền: chỉ BOT_OWNER. DUTY_ADMIN của guild KHÔNG dùng được endpoint này.
+    """
+    from sqlalchemy import delete as sql_delete, update as sql_update
+    from models.duty_identity_binding import DutyIdentityBinding
+
+    try:
+        guild_id = int(payload.get("guild_id") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="guild_id phải là số")
+    if guild_id <= 0:
+        raise HTTPException(status_code=400, detail="guild_id không hợp lệ")
+
+    confirm = (payload.get("confirm_phrase") or "").strip() if isinstance(payload.get("confirm_phrase"), str) else ""
+    expected = f"XOA-{guild_id}"
+    if confirm != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Phrase xác nhận sai. Phải gõ chính xác: {expected}",
+        )
+
+    user_id = int(current_user["sub"])
+    username = current_user.get("username", f"user_{user_id}")
+    ip = request.client.host if request.client else None
+
+    # Đếm trước khi xoá
+    count_row = await session.execute(
+        select(func.count(DutyLog.id)).where(DutyLog.guild_id == guild_id)
+    )
+    log_count = count_row.scalar() or 0
+    binding_count_row = await session.execute(
+        select(func.count(DutyIdentityBinding.discord_user_id))
+        .where(DutyIdentityBinding.guild_id == guild_id)
+    )
+    binding_count = binding_count_row.scalar() or 0
+
+    # Mass delete
+    await session.execute(sql_delete(DutyLog).where(DutyLog.guild_id == guild_id))
+    await session.execute(
+        sql_update(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .values(log_count=0)
+    )
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=user_id,
+        username=username,
+        action=AuditAction.LOG_WIPED,
+        detail={
+            "deleted_logs": log_count,
+            "reset_bindings": binding_count,
+            "confirm_phrase": expected,
+            "via": "web",
+        },
+        ip_address=ip,
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {
+        "success": True,
+        "deleted_logs": log_count,
+        "reset_bindings": binding_count,
+        "guild_id": str(guild_id),
+    }
+
+
 @router.post("/overview/refresh")
 @limiter.limit("3/minute")
 async def refresh_overview(

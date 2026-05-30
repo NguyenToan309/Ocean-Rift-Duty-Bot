@@ -15,6 +15,7 @@ from models.staff_member import (
     is_valid_position, get_position_level,
 )
 from models.system_setting import SystemSetting, DEFAULTS as SYSTEM_DEFAULTS, ALLOWED_KEYS as SYSTEM_ALLOWED_KEYS, MAX_VALUE_LENGTH as SYSTEM_MAX_LENGTH
+from models.duty_identity_binding import DutyIdentityBinding
 
 __all__ = [
     "Base",
@@ -43,4 +44,5 @@ __all__ = [
     "SYSTEM_DEFAULTS",
     "SYSTEM_ALLOWED_KEYS",
     "SYSTEM_MAX_LENGTH",
+    "DutyIdentityBinding",
 ]

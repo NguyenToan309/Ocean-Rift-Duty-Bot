@@ -52,6 +52,36 @@ export function DutyLogsPage() {
   const logsQ = useLogs(currentGuildId, page, search, period);
   const { learnAvatar } = useAvatars();
 
+  // Binding info: fetch danh sách binding để hiển thị original/current name + history
+  // bên trong UserGroupCard expand. Lookup theo discord_user_id.
+  const [bindingsData, setBindingsData] = useState<Awaited<ReturnType<typeof api.listBindings>>['items']>([]);
+  const bindingsQ = {
+    data: bindingsData,
+    refetch: async () => {
+      if (!currentGuildId) return;
+      try {
+        const r = await api.listBindings(currentGuildId);
+        setBindingsData(r.items);
+      } catch (err) {
+        // Bindings là optional UI info — không alert lỗi
+        console.debug('listBindings failed:', err);
+      }
+    },
+  };
+  useEffect(() => {
+    if (!currentGuildId) {
+      setBindingsData([]);
+      return;
+    }
+    bindingsQ.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentGuildId]);
+  const bindingByUserId = useMemo(() => {
+    const m = new Map<string, typeof bindingsData[number]>();
+    for (const b of bindingsData) m.set(b.discord_user_id, b);
+    return m;
+  }, [bindingsData]);
+
   // Seed avatar cache từ logs
   useEffect(() => {
     (logsQ.data?.items || []).forEach((log: any) => {
@@ -163,6 +193,53 @@ export function DutyLogsPage() {
       const r = await api.renameLogs(currentGuildId, oldName, newName, note);
       alert(`Đã đổi ${r.affected_logs} log từ "${oldName}" → "${newName}" (${r.affected_user_ids.length} user).`);
       logsQ.refetch();
+    } catch (err) {
+      alert('Lỗi: ' + formatError(err));
+    }
+  };
+
+  // Rebind: đổi current_ingame_name của binding cho 1 user_id cụ thể.
+  // KHÁC rename: KHÔNG đổi log cũ, chỉ đổi tên mà bot expect ở lần chấm sau.
+  // Dùng khi nhân viên đổi tên character — log cũ giữ tên cũ để admin so sánh.
+  const onRebind = async (targetUserId: string, currentName: string) => {
+    if (!currentGuildId) return;
+    if (!targetUserId || targetUserId.startsWith('__')) {
+      alert('Không tìm thấy Discord user ID cho user này — không thể rebind.');
+      return;
+    }
+    const newName = await promptNote({
+      title: `Đổi tên character cho user`,
+      description:
+        `Tên hiện tại: "${currentName}"\n\n` +
+        `Đổi binding ingame_name cho user — log cũ giữ nguyên, lần sau chấm với tên mới sẽ được nhận. ` +
+        `Phân biệt hoa thường (case-sensitive).`,
+      placeholder: 'VD: Báo Lê (CP890744)',
+      minLength: 1,
+      multiline: false,
+      confirmLabel: 'Tiếp tục',
+    });
+    if (newName === null) return;
+    if (newName === currentName) {
+      alert('Tên mới giống tên hiện tại.');
+      return;
+    }
+    const note = await promptNote({
+      title: `Lý do đổi "${currentName}" → "${newName}"`,
+      description: 'Audit log sẽ lưu lý do này. Tối thiểu 3 ký tự.',
+      placeholder: 'VD: nhân viên đổi character ingame...',
+      minLength: 3,
+    });
+    if (note === null) return;
+    try {
+      const r = await api.rebindUser(currentGuildId, targetUserId, newName, note);
+      alert(
+        `Đã đổi binding:\n` +
+        `• Tên gốc: ${r.original_ingame_name}\n` +
+        `• Tên cũ: ${r.old_name}\n` +
+        `• Tên mới: ${r.new_name}\n\n` +
+        `Log cũ trong DB không đổi.`
+      );
+      bindingsQ.refetch();
     } catch (err) {
       alert('Lỗi: ' + formatError(err));
     }
@@ -307,6 +384,9 @@ export function DutyLogsPage() {
               onDelete={onDelete}
               canRename={isAdmin}
               onRename={onRename}
+              canRebind={isAdmin}
+              onRebind={onRebind}
+              binding={bindingByUserId.get(group.user_id) || null}
             />
           );
         })}
@@ -332,8 +412,20 @@ export function DutyLogsPage() {
   );
 }
 
+interface BindingInfo {
+  discord_user_id: string;
+  original_ingame_name: string;
+  current_ingame_name: string;
+  is_renamed: boolean;
+  rebind_count: number;
+  log_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  history: Array<{ from: string; to: string; by: string; by_name?: string; at: string; reason: string; via?: string }>;
+}
+
 function UserGroupCard({
-  group, expanded, onToggle, canDelete, onDelete, canRename, onRename,
+  group, expanded, onToggle, canDelete, onDelete, canRename, onRename, canRebind, onRebind, binding,
 }: {
   group: UserGroup;
   expanded: boolean;
@@ -342,6 +434,9 @@ function UserGroupCard({
   onDelete: (logId: number, username: string) => void;
   canRename: boolean;
   onRename: (oldName: string, sessionCount: number) => void;
+  canRebind: boolean;
+  onRebind: (targetUserId: string, currentName: string) => void;
+  binding: BindingInfo | null;
 }) {
   const { getAvatar } = useAvatars();
   const avatarUrl = getAvatar(group.user_id);
@@ -381,6 +476,13 @@ function UserGroupCard({
           </div>
         </div>
 
+        {/* Badge "đã rebind" hiển thị khi binding.current khác original */}
+        {binding && binding.is_renamed && (
+          <Badge variant="secondary" className="text-[10px] shrink-0" title={`Tên gốc: ${binding.original_ingame_name}`}>
+            đã đổi character
+          </Badge>
+        )}
+
         {canRename && (
           <button
             type="button"
@@ -389,10 +491,24 @@ function UserGroupCard({
               onRename(group.username, group.sessionCount);
             }}
             className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--muted)] transition"
-            title={`Đổi tên "${group.username}" cho mọi log`}
+            title={`Rename mass: đổi tên trong các log cũ "${group.username}"`}
           >
             <Pencil className="h-3 w-3" />
-            Đổi tên
+            Rename log
+          </button>
+        )}
+        {canRebind && binding && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRebind(binding.discord_user_id, binding.current_ingame_name);
+            }}
+            className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--primary)] hover:bg-[var(--primary)]/10 transition"
+            title="Rebind: đổi current_ingame_name (binding) — KHÔNG đổi log cũ"
+          >
+            <Pencil className="h-3 w-3" />
+            Đổi character
           </button>
         )}
 
@@ -410,7 +526,52 @@ function UserGroupCard({
       {/* Expanded — log list */}
       {expanded && (
         <div className="border-t border-[var(--border)] bg-[var(--muted)]/20">
-          <div className="px-4 py-2 grid grid-cols-[1fr_1fr_auto_auto_auto] gap-3 text-[10px] font-bold uppercase tracking-wider text-[var(--muted-foreground)] border-b border-[var(--border)]">
+          {/* Binding info banner — hiển thị nếu user đã rebind hoặc có rebind history */}
+          {binding && (
+            <div className="px-4 py-3 border-b border-[var(--border)] bg-[var(--card)]">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-0.5">Tên chấm công lần đầu</p>
+                  <p className="font-mono-id text-sm">{binding.original_ingame_name}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-0.5">Tên đang dùng (hiện tại)</p>
+                  <p className={cn(
+                    'font-mono-id text-sm',
+                    binding.is_renamed && 'text-[var(--primary)] font-semibold',
+                  )}>
+                    {binding.current_ingame_name}
+                    {binding.is_renamed && <span className="ml-2 text-[10px] text-[var(--muted-foreground)]">(đã đổi {binding.rebind_count} lần)</span>}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] mb-0.5">Tổng log</p>
+                  <p className="font-mono-id text-sm">{binding.log_count}</p>
+                </div>
+              </div>
+              {binding.history.length > 0 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                    Lịch sử đổi tên ({binding.history.length})
+                  </summary>
+                  <ul className="mt-1.5 space-y-1 text-[11px]">
+                    {binding.history.slice().reverse().map((h, i) => (
+                      <li key={i} className="flex gap-2 items-baseline">
+                        <span className="text-[var(--muted-foreground)] font-mono-id">{formatDateTime(h.at).slice(0, 16)}</span>
+                        <span className="font-mono-id">"{h.from}"</span>
+                        <span className="text-[var(--muted-foreground)]">→</span>
+                        <span className="font-mono-id text-[var(--primary)]">"{h.to}"</span>
+                        <span className="text-[var(--muted-foreground)] italic">— {h.by_name || h.by}: {h.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+
+          <div className="px-4 py-2 grid grid-cols-[40px_1fr_1fr_auto_auto_auto] gap-3 text-[10px] font-bold uppercase tracking-wider text-[var(--muted-foreground)] border-b border-[var(--border)]">
+            <span>#</span>
             <span>Bắt đầu</span>
             <span>Kết thúc</span>
             <span>Thời lượng</span>
@@ -418,11 +579,14 @@ function UserGroupCard({
             <span className="text-right">Thao tác</span>
           </div>
           <div className="divide-y divide-[var(--border)]/50">
-            {group.logs.map(log => (
+            {group.logs.map((log, idx) => (
               <div
                 key={log.id}
-                className="px-4 py-2.5 grid grid-cols-[1fr_1fr_auto_auto_auto] gap-3 items-center text-sm hover:bg-[var(--muted)]/40"
+                className="px-4 py-2.5 grid grid-cols-[40px_1fr_1fr_auto_auto_auto] gap-3 items-center text-sm hover:bg-[var(--muted)]/40"
               >
+                <span className="text-[10px] text-[var(--muted-foreground)] font-mono-id">
+                  #{idx + 1}
+                </span>
                 <span className="font-mono-id text-xs flex items-center gap-1">
                   <Clock className="h-3 w-3 text-[var(--muted-foreground)]" />
                   {formatDateTime(log.started_at)}
