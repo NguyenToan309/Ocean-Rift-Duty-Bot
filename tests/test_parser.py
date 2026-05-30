@@ -280,3 +280,88 @@ class TestValidation:
         errors = self._make(username="A" * 100).validate()
         # Chỉ kiểm tra không có lỗi username (có thể có lỗi duration mismatch)
         assert not any("trống" in e or "quá dài" in e for e in errors)
+
+
+# ─── V2 format (CAPY TOWN LOGS) ─────────────────────────────────────────────
+
+class TestParseV2:
+    """Định dạng mới với emoji + Discord handle + exit reason"""
+
+    V2_FULL = (
+        "CAPY TOWN LOGS\n"
+        "👤 Tên: Ha Bibi (ACheen)\n"
+        "💬 Discord: @Habibi\n"
+        "🕒 Tổng thời gian: 18 Phút\n"
+        "🟢 Bắt đầu: 30/05/2026 22:43:00\n"
+        "🔴 Kết thúc: 30/05/2026 23:01:58\n"
+        "❓ Lý do rời: Server->client connection timed out. Last seen 795 msec ago."
+    )
+
+    V2_HOURS_MINUTES = (
+        "CAPY TOWN LOGS\n"
+        "Tên: Báo Lê (Báo Lê Văm)\n"
+        "Discord: @VT | Báo\n"
+        "Tổng thời gian: 1 Giờ 10 Phút\n"
+        "Bắt đầu: 30/05/2026 21:55:54\n"
+        "Kết thúc: 30/05/2026 23:06:15\n"
+        "Lý do rời: Exiting"
+    )
+
+    V2_NO_REASON = (
+        "CAPY TOWN LOGS\n"
+        "Tên: HẮC Y ĐẠO SƯ (CP847931)\n"
+        "Tên discord: @VP | Hắc Y Đạo Sư\n"
+        "Tổng thời gian: 1 Giờ 28 Phút\n"
+        "Bắt đầu: 30/05/2026 21:50:10\n"
+        "Kết thúc: 30/05/2026 23:18:21"
+    )
+
+    def test_v2_full_format(self):
+        r = parse_duty_text(self.V2_FULL)
+        assert r is not None
+        assert r.format_version == 2
+        assert r.username == "Ha Bibi (ACheen)"
+        assert r.duration_minutes == 18
+        assert r.discord_handle == "@Habibi"
+        assert r.exit_reason and "timed out" in r.exit_reason
+        assert r.started_at == datetime(2026, 5, 30, 22, 43, 0)
+
+    def test_v2_hours_and_minutes(self):
+        """1 Giờ 10 Phút = 70 phút"""
+        r = parse_duty_text(self.V2_HOURS_MINUTES)
+        assert r is not None
+        assert r.duration_minutes == 70
+        assert r.discord_handle == "@VT | Báo"
+        assert r.exit_reason == "Exiting"
+        assert r.format_version == 2
+
+    def test_v2_no_reason_optional(self):
+        """Field 'Lý do rời' không bắt buộc"""
+        r = parse_duty_text(self.V2_NO_REASON)
+        assert r is not None
+        assert r.username == "HẮC Y ĐẠO SƯ (CP847931)"
+        assert r.duration_minutes == 88   # 1*60 + 28
+        assert r.exit_reason is None
+        assert r.discord_handle == "@VP | Hắc Y Đạo Sư"
+
+    def test_v2_validate_duration_match(self):
+        """V2 với duration khớp thời gian thực tế → no errors"""
+        r = parse_duty_text(self.V2_FULL)
+        # 22:43 → 23:01:58 = ~18.9 phút, ghi 18 → chênh < 5 → OK
+        assert r.validate() == []
+
+    def test_v1_still_works(self):
+        """V1 (LOG DUTY cũ) vẫn parse được sau khi thêm V2 — backward compat"""
+        text = (
+            "LOG DUTY\n"
+            "Tên: Test User\n"
+            "Thời gian làm việc: 60 phút\n"
+            "Thời gian bắt đầu: 01/05/2026 08:00:00\n"
+            "Thời gian kết thúc: 01/05/2026 09:00:00"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 60
+        assert r.format_version == 1
+        assert r.discord_handle is None
+        assert r.exit_reason is None

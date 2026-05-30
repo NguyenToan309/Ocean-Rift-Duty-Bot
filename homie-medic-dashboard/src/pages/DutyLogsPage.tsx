@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  Download, Search, ChevronDown, ChevronUp, Trash2, FileText, ClipboardList, Clock,
+  Download, Search, ChevronDown, ChevronUp, Trash2, FileText, ClipboardList, Clock, Pencil,
 } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -125,6 +125,43 @@ export function DutyLogsPage() {
     if (note === null) return;
     try {
       await api.deleteLog(currentGuildId, logId, note);
+      logsQ.refetch();
+    } catch (err) {
+      alert('Lỗi: ' + formatError(err));
+    }
+  };
+
+  // Mass rename: nhân viên đổi tên character ingame → admin chạy lệnh đồng bộ
+  // mọi log cũ về tên mới. Backend tự verify tên mới không thuộc user_id khác.
+  const onRename = async (oldName: string, sessionCount: number) => {
+    if (!currentGuildId) return;
+    // Step 1: lấy tên mới (1 dòng, không multiline)
+    const newName = await promptNote({
+      title: `Đổi tên người chấm công`,
+      description:
+        `Sẽ áp dụng cho TẤT CẢ log của "${oldName}" (${sessionCount} ca) trong server hiện tại. ` +
+        `Dùng khi nhân viên đổi tên character ingame. Username lock của bot sẽ tự ánh xạ user_id → tên mới.`,
+      placeholder: 'Nhập tên mới (giống hệt định dạng trong log)...',
+      minLength: 1,
+      multiline: false,
+      confirmLabel: 'Tiếp tục',
+    });
+    if (newName === null) return;
+    if (newName.toLowerCase() === oldName.toLowerCase()) {
+      alert('Tên mới và tên cũ giống nhau (case-insensitive).');
+      return;
+    }
+    // Step 2: lý do
+    const note = await promptNote({
+      title: `Lý do đổi "${oldName}" → "${newName}"`,
+      description: 'Audit log sẽ lưu lý do này. Tối thiểu 3 ký tự.',
+      placeholder: 'VD: nhân viên đổi tên character từ tuần này...',
+      minLength: 3,
+    });
+    if (note === null) return;
+    try {
+      const r = await api.renameLogs(currentGuildId, oldName, newName, note);
+      alert(`Đã đổi ${r.affected_logs} log từ "${oldName}" → "${newName}" (${r.affected_user_ids.length} user).`);
       logsQ.refetch();
     } catch (err) {
       alert('Lỗi: ' + formatError(err));
@@ -268,6 +305,8 @@ export function DutyLogsPage() {
               onToggle={() => toggle(key)}
               canDelete={isAdmin}
               onDelete={onDelete}
+              canRename={isAdmin}
+              onRename={onRename}
             />
           );
         })}
@@ -294,13 +333,15 @@ export function DutyLogsPage() {
 }
 
 function UserGroupCard({
-  group, expanded, onToggle, canDelete, onDelete,
+  group, expanded, onToggle, canDelete, onDelete, canRename, onRename,
 }: {
   group: UserGroup;
   expanded: boolean;
   onToggle: () => void;
   canDelete: boolean;
   onDelete: (logId: number, username: string) => void;
+  canRename: boolean;
+  onRename: (oldName: string, sessionCount: number) => void;
 }) {
   const { getAvatar } = useAvatars();
   const avatarUrl = getAvatar(group.user_id);
@@ -339,6 +380,21 @@ function UserGroupCard({
             <p className="text-xs font-mono-id">{formatDateTime(group.lastAt).slice(0, 16)}</p>
           </div>
         </div>
+
+        {canRename && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRename(group.username, group.sessionCount);
+            }}
+            className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--muted)] transition"
+            title={`Đổi tên "${group.username}" cho mọi log`}
+          >
+            <Pencil className="h-3 w-3" />
+            Đổi tên
+          </button>
+        )}
 
         <div className="shrink-0 text-[var(--muted-foreground)]">
           {expanded ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}

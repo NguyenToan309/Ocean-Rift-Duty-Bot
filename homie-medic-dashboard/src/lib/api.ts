@@ -675,6 +675,17 @@ export const api = {
       query: { guild_id, note },
     }),
 
+  // Mass rename: đổi username tất cả log của old_name → new_name trong 1 guild.
+  // Use case: nhân viên đổi tên character ingame, đồng bộ lại log cũ.
+  renameLogs: (guild_id: string, old_name: string, new_name: string, note: string) =>
+    apiFetch<{ success: boolean; affected_logs: number; affected_user_ids: string[] }>(
+      '/api/dashboard/logs/rename',
+      {
+        method: 'POST',
+        body: { guild_id, old_name, new_name, note },
+      },
+    ),
+
   // ----- SCHEDULE -----
   // Backend /grid trả {items: [{user_id, username, schedules: [{weekday, start_time, end_time, ...}]}]}
   // — group by user. Frontend cần group by day để render calendar grid.

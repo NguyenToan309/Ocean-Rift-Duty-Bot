@@ -91,6 +91,8 @@ class ConfirmLogView(discord.ui.View):
                     source=self.parsed_data.get("source", "forward"),
                     source_message_id=self.parsed_data.get("source_message_id"),
                     submitted_by=self.submitter_id,
+                    discord_handle=self.parsed_data.get("discord_handle"),
+                    exit_reason=self.parsed_data.get("exit_reason"),
                 )
 
                 # Ghi audit log
@@ -202,6 +204,8 @@ async def _save_duty_log(
     source: str,
     source_message_id: int | None,
     submitted_by: int,
+    discord_handle: str | None = None,
+    exit_reason: str | None = None,
 ) -> DutyLog:
     """
     Lưu DutyLog vào DB với 3 tầng bảo vệ:
@@ -347,6 +351,8 @@ async def _save_duty_log(
         source_message_id=source_message_id,
         submitted_by=submitted_by,
         schedule_id=schedule_id,
+        discord_handle=discord_handle,
+        exit_reason=exit_reason,
         created_at=utcnow(),
     )
     session.add(log)
@@ -647,6 +653,8 @@ class LogDutyCog(commands.Cog):
                     source="message",
                     source_message_id=message.id,
                     submitted_by=message.author.id,
+                    discord_handle=parsed.discord_handle,
+                    exit_reason=parsed.exit_reason,
                 )
                 session.add(AuditLog(
                     guild_id=message.guild.id,
@@ -908,6 +916,8 @@ class LogDutyCog(commands.Cog):
             "raw_text": parsed.raw_text,
             "source": "ocr",
             "source_message_id": None,
+            "discord_handle": parsed.discord_handle,
+            "exit_reason": parsed.exit_reason,
         }
 
         async with AsyncSessionLocal() as session:
@@ -1013,6 +1023,8 @@ class LogDutyCog(commands.Cog):
             "raw_text": parsed.raw_text,
             "source": "forward",
             "source_message_id": None,
+            "discord_handle": parsed.discord_handle,
+            "exit_reason": parsed.exit_reason,
         }
 
         async with AsyncSessionLocal() as session:
@@ -1248,10 +1260,140 @@ class LogDutyCog(commands.Cog):
             ephemeral=True,
         )
 
+    @log_group.command(
+        name="rename",
+        description="Đổi tên người chấm công — áp dụng cho mọi log cũ (CHỈ Admin)",
+    )
+    @app_commands.describe(
+        old_name="Tên cũ trong log (case-insensitive)",
+        new_name="Tên mới sẽ ghi lên các log đó",
+        reason="Lý do đổi (≥3 ký tự, sẽ ghi audit log)",
+    )
+    @app_commands.checks.cooldown(rate=3, per=60.0)
+    async def log_rename(
+        self,
+        interaction: discord.Interaction,
+        old_name: str,
+        new_name: str,
+        reason: str,
+    ):
+        """Mass-rename: update mọi DutyLog có username == old_name trong guild.
+
+        Use case: nhân viên đổi tên character → các log cũ vẫn lưu tên cũ,
+        admin chạy lệnh này để đồng bộ tên. Username lock (Tầng -1 ở
+        _save_duty_log) sẽ tự động ánh xạ user_id → tên mới sau khi rename.
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        old_clean = old_name.strip()
+        new_clean = new_name.strip()
+        reason_clean = reason.strip()
+
+        if len(old_clean) == 0 or len(new_clean) == 0:
+            await interaction.followup.send(
+                embed=build_error_embed("Tên cũ và tên mới không được rỗng."),
+                ephemeral=True,
+            )
+            return
+        if len(reason_clean) < 3:
+            await interaction.followup.send(
+                embed=build_error_embed("Phải ghi lý do (≥3 ký tự) để lưu audit log."),
+                ephemeral=True,
+            )
+            return
+        if old_clean.lower() == new_clean.lower():
+            await interaction.followup.send(
+                embed=build_error_embed("Tên cũ và tên mới giống nhau (so sánh case-insensitive)."),
+                ephemeral=True,
+            )
+            return
+        if len(new_clean) > 100:
+            await interaction.followup.send(
+                embed=build_error_embed("Tên mới quá dài (tối đa 100 ký tự)."),
+                ephemeral=True,
+            )
+            return
+
+        async with AsyncSessionLocal() as session:
+            if not await require_admin(interaction, session):
+                await send_no_permission(interaction, DutyRole.ADMIN)
+                return
+
+            # Tìm tất cả log khớp tên cũ (lowercase + trimmed)
+            matched = await session.execute(
+                select(DutyLog)
+                .where(DutyLog.guild_id == interaction.guild_id)
+                .where(func.lower(func.trim(DutyLog.username)) == old_clean.lower())
+            )
+            logs = list(matched.scalars().all())
+
+            if not logs:
+                await interaction.followup.send(
+                    embed=build_error_embed(
+                        f"Không có log nào của **{old_clean}** trong server này. "
+                        "Kiểm tra lại chính tả (so sánh không phân biệt hoa thường)."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Verify tên mới chưa thuộc về user_id khác (tránh conflict username lock)
+            new_owner = await session.execute(
+                select(DutyLog.user_id)
+                .where(DutyLog.guild_id == interaction.guild_id)
+                .where(func.lower(func.trim(DutyLog.username)) == new_clean.lower())
+                .limit(1)
+            )
+            new_owner_id = new_owner.scalar_one_or_none()
+            current_owner_id = logs[0].user_id
+            if new_owner_id is not None and new_owner_id != current_owner_id:
+                await interaction.followup.send(
+                    embed=build_error_embed(
+                        f"Tên mới **{new_clean}** đã thuộc về user khác (ID `{new_owner_id}`). "
+                        "Không thể rename — sẽ gây xung đột username lock."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Snapshot user_ids bị ảnh hưởng để ghi audit
+            affected_user_ids = sorted({l.user_id for l in logs})
+            affected_count = len(logs)
+
+            # Mass update
+            for log in logs:
+                log.username = new_clean
+
+            session.add(AuditLog(
+                guild_id=interaction.guild_id,
+                user_id=interaction.user.id,
+                username=str(interaction.user),
+                action=AuditAction.LOG_RENAMED,
+                detail={
+                    "old_name": old_clean,
+                    "new_name": new_clean,
+                    "affected_logs": affected_count,
+                    "affected_user_ids": [str(u) for u in affected_user_ids],
+                    "reason": reason_clean,
+                },
+                created_at=utcnow(),
+            ))
+            await session.commit()
+
+        await interaction.followup.send(
+            embed=build_success_embed(
+                f"Đã đổi tên **{affected_count}** log từ "
+                f"`{old_clean}` → `{new_clean}`. "
+                f"Áp dụng cho {len(affected_user_ids)} user_id."
+            ),
+            ephemeral=True,
+        )
+
     @log_upload.error
     @log_forward.error
     @log_view.error
     @log_delete.error
+    @log_rename.error
     async def on_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CommandOnCooldown):
             await interaction.response.send_message(
