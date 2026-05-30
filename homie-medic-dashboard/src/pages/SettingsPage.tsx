@@ -5,6 +5,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { api, type SystemRole, formatError } from '../lib/api';
 import { promptNote } from '../lib/promptNote';
+import { useBranding } from '../contexts/BrandingContext';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -25,8 +26,9 @@ const POSITIONS = [
 ];
 
 export function SettingsPage() {
-  const { currentGuildId, currentGuild } = useAuth();
+  const { currentGuildId, currentGuild, me } = useAuth();
   const isAdmin = currentGuild?.is_admin || false;
+  const isBotOwner = me?.is_bot_owner || false;
 
   if (!isAdmin) {
     return (
@@ -78,28 +80,7 @@ export function SettingsPage() {
         </TabsList>
 
         <TabsContent value="general">
-          <Card className="p-6 max-w-2xl space-y-4">
-            <div>
-              <Label>Tên hệ thống</Label>
-              <Input defaultValue="Homie Medic" className="mt-1" />
-            </div>
-            <div>
-              <Label>Múi giờ</Label>
-              <NativeSelect className="mt-1">
-                <option>Asia/Ho_Chi_Minh (UTC+7)</option>
-                <option>Asia/Bangkok (UTC+7)</option>
-                <option>Asia/Singapore (UTC+8)</option>
-                <option>UTC</option>
-              </NativeSelect>
-            </div>
-            <div>
-              <Label>Ngôn ngữ</Label>
-              <NativeSelect className="mt-1">
-                <option>Tiếng Việt</option>
-                <option>English</option>
-              </NativeSelect>
-            </div>
-          </Card>
+          <GeneralTab isBotOwner={isBotOwner} />
         </TabsContent>
 
         <TabsContent value="roles">
@@ -316,6 +297,180 @@ function PositionRoleTab({ guildId }: { guildId: string | null }) {
           </Button>
         </div>
       )}
+    </Card>
+  );
+}
+
+// ─── General Tab (Chung) — đổi system_name + bot_activity_text ──────────────
+
+function GeneralTab({ isBotOwner }: { isBotOwner: boolean }) {
+  const { refresh: refreshBranding } = useBranding();
+  const [systemName, setSystemName] = useState('');
+  const [botActivity, setBotActivity] = useState('');
+  const [originalName, setOriginalName] = useState('');
+  const [originalActivity, setOriginalActivity] = useState('');
+  const [maxName, setMaxName] = useState(60);
+  const [maxActivity, setMaxActivity] = useState(128);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  useEffect(() => {
+    if (!isBotOwner) {
+      setLoading(false);
+      return;
+    }
+    api.systemSettingsGet()
+      .then(r => {
+        const sn = r.settings.system_name;
+        const ba = r.settings.bot_activity_text;
+        setSystemName(sn.value);
+        setOriginalName(sn.value);
+        setBotActivity(ba.value);
+        setOriginalActivity(ba.value);
+        if (sn.max_length) setMaxName(sn.max_length);
+        if (ba.max_length) setMaxActivity(ba.max_length);
+      })
+      .catch(err => setError(formatError(err)))
+      .finally(() => setLoading(false));
+  }, [isBotOwner]);
+
+  const nameDirty = systemName.trim() !== originalName;
+  const activityDirty = botActivity.trim() !== originalActivity;
+  const dirty = nameDirty || activityDirty;
+  const nameTooLong = systemName.trim().length > maxName;
+  const activityTooLong = botActivity.trim().length > maxActivity;
+  const nameEmpty = systemName.trim().length === 0;
+  const activityEmpty = botActivity.trim().length === 0;
+  const canSave = dirty && !nameTooLong && !activityTooLong && !nameEmpty && !activityEmpty;
+
+  const save = async () => {
+    if (!canSave) return;
+    const note = await promptNote({
+      title: 'Cập nhật branding hệ thống',
+      description:
+        'Đổi tên web hoặc text Discord presence. Bot sẽ áp dụng presence mới trong vòng 60 giây. ' +
+        'Tối thiểu 3 ký tự để ghi audit log.',
+      placeholder: 'VD: đổi brand sang Capy Medic theo yêu cầu...',
+      minLength: 3,
+    });
+    if (note === null) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updates: Record<string, string> = {};
+      if (nameDirty) updates.system_name = systemName.trim();
+      if (activityDirty) updates.bot_activity_text = botActivity.trim();
+      await api.systemSettingsUpdate(updates, note);
+      setOriginalName(systemName.trim());
+      setOriginalActivity(botActivity.trim());
+      setSavedAt(new Date());
+      // Reload branding context để Sidebar + title cập nhật ngay
+      await refreshBranding();
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!isBotOwner) {
+    return (
+      <Card className="p-6 max-w-2xl">
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-[var(--info)]/10 text-sm">
+          <Lock className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">Cần quyền Bot Owner</p>
+            <p className="text-xs text-[var(--muted-foreground)] mt-1">
+              Chỉ user trong env <code className="bg-[var(--muted)] px-1 rounded">BOT_OWNER_IDS</code> mới đổi
+              được tên hệ thống và Discord presence của bot.
+            </p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-6 max-w-2xl space-y-5">
+      <div>
+        <h3 className="font-semibold mb-1">Branding</h3>
+        <p className="text-xs text-[var(--muted-foreground)]">
+          Áp dụng cho cả web (sidebar, login, browser title) và Discord presence của bot.
+        </p>
+      </div>
+
+      <div>
+        <Label>Tên hệ thống (hiển thị trên web)</Label>
+        <Input
+          value={systemName}
+          onChange={e => setSystemName(e.target.value)}
+          maxLength={maxName + 20}
+          className="mt-1"
+          disabled={loading || saving}
+          placeholder="VD: Capy Medic"
+        />
+        <div className="flex justify-between text-xs mt-1">
+          <span className={cn(
+            'text-[var(--muted-foreground)]',
+            nameTooLong && 'text-[var(--destructive)]',
+            nameEmpty && 'text-[var(--destructive)]',
+          )}>
+            {nameEmpty
+              ? 'Không được rỗng'
+              : nameTooLong
+                ? `Vượt ${maxName} ký tự (hiện ${systemName.trim().length})`
+                : 'Sidebar, login, browser title sẽ dùng tên này'}
+          </span>
+          <span className="text-[var(--muted-foreground)]">{systemName.trim().length} / {maxName}</span>
+        </div>
+      </div>
+
+      <div>
+        <Label>Discord presence — text "đang xem ..."</Label>
+        <Input
+          value={botActivity}
+          onChange={e => setBotActivity(e.target.value)}
+          maxLength={maxActivity + 20}
+          className="mt-1"
+          disabled={loading || saving}
+          placeholder="VD: Capy Medic | /log upload"
+        />
+        <div className="flex justify-between text-xs mt-1">
+          <span className={cn(
+            'text-[var(--muted-foreground)]',
+            activityTooLong && 'text-[var(--destructive)]',
+            activityEmpty && 'text-[var(--destructive)]',
+          )}>
+            {activityEmpty
+              ? 'Không được rỗng'
+              : activityTooLong
+                ? `Vượt ${maxActivity} ký tự`
+                : 'Bot Discord sẽ hiển thị "Đang xem <text>" trong vòng 60 giây'}
+          </span>
+          <span className="text-[var(--muted-foreground)]">{botActivity.trim().length} / {maxActivity}</span>
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-[var(--destructive)]/10 text-[var(--destructive)] text-sm">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      {savedAt && !error && !dirty && (
+        <div className="flex items-center gap-2 text-xs text-[var(--success)]">
+          <span>✓</span>
+          Đã lưu lúc {savedAt.toLocaleTimeString('vi-VN')} — bot sẽ cập nhật presence trong 60s.
+        </div>
+      )}
+
+      <Button onClick={save} disabled={!canSave || saving || loading} className="w-full">
+        <Save className="h-4 w-4" />
+        {saving ? 'Đang lưu...' : loading ? 'Đang tải...' : dirty ? 'Lưu thay đổi' : 'Đã đồng bộ'}
+      </Button>
     </Card>
   );
 }

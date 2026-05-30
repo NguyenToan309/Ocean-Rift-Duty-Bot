@@ -1,7 +1,9 @@
 """
-setup.py — Endpoint xem cấu hình setup của guild (role_map, channel_ids, timezone).
+setup.py — Endpoint xem cấu hình setup của guild (role_map, channel_ids, timezone)
++ public branding endpoint (/api/branding) trả system_name cho frontend
+mọi nơi cần (Sidebar logo, LoginPage title, browser tab).
 
-Hiện chỉ có GET (read-only). Edit qua slash command `/setup role/channel/timezone`
+Hiện setup chỉ có GET (read-only). Edit qua slash command `/setup role/channel/timezone`
 để giữ audit log nhất quán và check Discord permission của bot.
 """
 import logging
@@ -11,12 +13,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.base import get_db
 from models.guild import GuildConfig
+from models.system_setting import SystemSetting, DEFAULTS as SYS_DEFAULTS
 from web.middleware.auth_guard import require_auth, require_guild_role
 from web.middleware.rate_limit import limiter
 from web.utils.discord_resolver import resolve_role_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/setup", tags=["setup"])
+# Router phụ cho /api/branding — endpoint public không thuộc /api/setup
+branding_router = APIRouter(prefix="/api", tags=["branding"])
+
+
+@branding_router.get("/branding")
+@limiter.limit("60/minute")
+async def get_branding(
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+):
+    """Public endpoint — trả system_name cho frontend (sidebar, login, title).
+
+    Không require auth vì branding hiển thị cả trên trang login (chưa đăng nhập).
+    Chỉ trả `system_name` (không trả bot_activity_text để giảm exposed surface).
+    """
+    row = await session.execute(
+        select(SystemSetting).where(SystemSetting.key == "system_name")
+    )
+    s = row.scalar_one_or_none()
+    return {"system_name": s.value if s else SYS_DEFAULTS["system_name"]}
 
 
 @router.get("/roles")

@@ -160,6 +160,7 @@ app.include_router(realtime.router)
 app.include_router(staff.router)
 app.include_router(admin.router)
 app.include_router(setup_router.router)
+app.include_router(setup_router.branding_router)
 
 
 # ----- Pages -----

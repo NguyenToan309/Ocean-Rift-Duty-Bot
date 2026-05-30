@@ -49,6 +49,7 @@ class AuditAction:
     # Bot owner admin overview
     ADMIN_OVERVIEW_VIEWED = "ADMIN_OVERVIEW_VIEWED"      # Owner xem trang /admin/overview
     ADMIN_OVERVIEW_REFRESHED = "ADMIN_OVERVIEW_REFRESHED"  # Owner ấn refresh cache
+    SYSTEM_SETTINGS_UPDATED = "SYSTEM_SETTINGS_UPDATED"   # Owner đổi system_name / bot_activity_text
 
 
 class AuditLog(Base):

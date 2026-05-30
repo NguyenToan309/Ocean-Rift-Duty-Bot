@@ -17,6 +17,7 @@ import {
 import { cn } from '../../lib/cn';
 import { Badge } from '../ui/badge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useBranding } from '../../contexts/BrandingContext';
 
 const NAV_ITEMS = [
   { path: '/', icon: LayoutDashboard, label: 'Tổng quan', exact: true },
@@ -37,6 +38,7 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed, onToggleCollapse, pendingLeaves = 0 }: SidebarProps) {
   const { currentGuild, me } = useAuth();
+  const { systemName } = useBranding();
   const isAdmin = currentGuild?.is_admin || false;
   const isBotOwner = me?.is_bot_owner || false;
 
@@ -55,7 +57,7 @@ export function Sidebar({ collapsed, onToggleCollapse, pendingLeaves = 0 }: Side
         </div>
         {!collapsed && (
           <div className="overflow-hidden">
-            <p className="text-sm font-bold tracking-tight truncate">Homie Medic</p>
+            <p className="text-sm font-bold tracking-tight truncate" title={systemName}>{systemName}</p>
             <p className="text-[10px] italic text-[var(--muted-foreground)] truncate">Discord Bot Dashboard</p>
           </div>
         )}

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Cross, Shield, ArrowRight, LogIn } from 'lucide-react';
 import { startDiscordLogin, verify2FA, read2FAFlagFromURL, clearURLParams } from '../lib/auth';
 import { useAuth } from '../contexts/AuthContext';
+import { useBranding } from '../contexts/BrandingContext';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -11,6 +12,7 @@ import { formatError } from '../lib/api';
 
 export function LoginPage() {
   const { state, setAuthState } = useAuth();
+  const { systemName } = useBranding();
   const navigate = useNavigate();
   const [show2FA, setShow2FA] = useState(false);
 
@@ -38,7 +40,7 @@ export function LoginPage() {
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[var(--primary)] text-white mb-4 shadow-lg">
             <Cross className="h-7 w-7" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">Homie Medic</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{systemName}</h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
             Hệ thống quản lý ca trực y tế
           </p>
@@ -53,7 +55,7 @@ export function LoginPage() {
         <p className="text-xs text-center text-[var(--muted-foreground)] mt-6">
           Bot chấm công nội bộ · Yêu cầu role được cấp quyền
           <br />
-          <span className="opacity-60">© 2026 Homie Medic — Discord Bot Dashboard</span>
+          <span className="opacity-60">© 2026 {systemName} — Discord Bot Dashboard</span>
         </p>
       </div>
     </div>
