@@ -844,6 +844,110 @@ async def list_logs(
     }
 
 
+@router.post("/logs/rename")
+@limiter.limit("10/minute")
+async def rename_logs(
+    request: Request,
+    payload: dict,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Mass-rename log: đổi username tất cả log của 1 tên cũ → tên mới trong
+    1 guild. Use case: user đổi tên character → đồng bộ lại log cũ.
+
+    Body: {guild_id: int, old_name: str, new_name: str, note: str}
+
+    Quyền: DUTY_ADMIN. Trả {affected_logs, affected_user_ids[]}.
+
+    Chặn conflict: nếu tên mới đã thuộc về user_id khác (theo username lock)
+    → 409 Conflict; admin phải xử lý owner cũ trước khi rename.
+    """
+    guild_id_raw = payload.get("guild_id")
+    old_name_raw = payload.get("old_name")
+    new_name_raw = payload.get("new_name")
+    note_raw = payload.get("note")
+
+    if not isinstance(guild_id_raw, int) and not (isinstance(guild_id_raw, str) and guild_id_raw.isdigit()):
+        raise HTTPException(status_code=400, detail="guild_id không hợp lệ")
+    guild_id = int(guild_id_raw)
+
+    old_name = (old_name_raw or "").strip() if isinstance(old_name_raw, str) else ""
+    new_name = (new_name_raw or "").strip() if isinstance(new_name_raw, str) else ""
+    note = (note_raw or "").strip() if isinstance(note_raw, str) else ""
+
+    if not old_name or not new_name:
+        raise HTTPException(status_code=400, detail="old_name và new_name không được rỗng")
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Phải ghi lý do tối thiểu 3 ký tự (note)")
+    if old_name.lower() == new_name.lower():
+        raise HTTPException(status_code=400, detail="Tên cũ và tên mới giống nhau (case-insensitive)")
+    if len(new_name) > 100:
+        raise HTTPException(status_code=400, detail="Tên mới quá dài (tối đa 100 ký tự)")
+
+    user_id = int(current_user["sub"])
+    username = current_user.get("username", f"user_{user_id}")
+
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+
+    # Tìm log khớp tên cũ
+    matched = await session.execute(
+        select(DutyLog)
+        .where(DutyLog.guild_id == guild_id)
+        .where(func.lower(func.trim(DutyLog.username)) == old_name.lower())
+    )
+    logs = list(matched.scalars().all())
+    if not logs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Không có log nào của '{old_name}' trong guild này.",
+        )
+
+    # Verify tên mới chưa thuộc user_id khác
+    current_owner_id = logs[0].user_id
+    new_owner_row = await session.execute(
+        select(DutyLog.user_id)
+        .where(DutyLog.guild_id == guild_id)
+        .where(func.lower(func.trim(DutyLog.username)) == new_name.lower())
+        .limit(1)
+    )
+    new_owner_id = new_owner_row.scalar_one_or_none()
+    if new_owner_id is not None and new_owner_id != current_owner_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tên mới '{new_name}' đã thuộc user khác (ID {new_owner_id}). "
+                   "Xử lý owner cũ trước khi rename.",
+        )
+
+    affected_user_ids = sorted({l.user_id for l in logs})
+    affected_count = len(logs)
+    for log in logs:
+        log.username = new_name
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=user_id,
+        username=username,
+        action=AuditAction.LOG_RENAMED,
+        detail={
+            "old_name": old_name,
+            "new_name": new_name,
+            "affected_logs": affected_count,
+            "affected_user_ids": [str(u) for u in affected_user_ids],
+            "note": note,
+            "via": "web",
+        },
+        ip_address=request.client.host if request.client else None,
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {
+        "success": True,
+        "affected_logs": affected_count,
+        "affected_user_ids": [str(u) for u in affected_user_ids],
+    }
+
+
 @router.delete("/logs/{log_id}")
 @limiter.limit("30/minute")
 async def delete_log(

@@ -37,6 +37,11 @@ class DutyLog(Base):
     # Nguồn dữ liệu: "ocr" | "forward" | "manual" | "message"
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="forward")
 
+    # Format LOG DUTY v2 (CAPY TOWN LOGS) fields — nullable vì V1 cũ không có
+    # và V2 cũng có thể không có exit_reason (thoát bình thường).
+    discord_handle: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Discord message ID gốc (để tránh duplicate auto-scan).
     # Unique constraint chuyển sang partial index (migration 009): chỉ
     # enforce trên non-null. Xem __table_args__ bên dưới.
