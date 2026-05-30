@@ -613,77 +613,13 @@ class LogDutyCog(commands.Cog):
         if not parsed:
             return
 
-        # ── Verify STRICT: tên trong LOG DUTY phải DUY NHẤT thuộc về người gửi ──
-        # Iterate toàn bộ guild members → tìm ai khớp với parsed.username.
-        # Chống IMPERSONATION: user không thể đổi nick thành tên người khác để chấm công hộ.
-        status, matches = _resolve_name_owner(message.guild, parsed.username)
-        if status == "none":
-            logger.info(
-                f"[auto-scan] Tên không thuộc ai: parsed='{parsed.username}' "
-                f"author={message.author} (id={message.author.id})"
-            )
-            try:
-                await message.add_reaction("🚫")
-                await message.reply(
-                    embed=build_log_name_mismatch_embed(parsed.username, message.author),
-                    mention_author=False,
-                    delete_after=60,
-                )
-            except discord.HTTPException:
-                pass
-            return
-        if status == "ambiguous":
-            logger.warning(
-                f"[auto-scan] Ambiguous name: parsed='{parsed.username}' "
-                f"matches={[m.display_name for m in matches]}"
-            )
-            try:
-                await message.add_reaction("⚠️")
-                await message.reply(
-                    embed=build_log_ambiguous_name_embed(
-                        parsed.username, matches, message.author
-                    ),
-                    mention_author=False,
-                    delete_after=90,
-                )
-            except discord.HTTPException:
-                pass
-            return
-        # status == "ok": có duy nhất 1 người khớp
-        if matches[0].id != message.author.id:
-            logger.warning(
-                f"[auto-scan] IMPERSONATION: author={message.author.id} "
-                f"({message.author.display_name}) cố gắng chấm công cho "
-                f"{matches[0].id} ({matches[0].display_name})"
-            )
-            try:
-                await message.add_reaction("🚫")
-                await message.reply(
-                    embed=build_log_impersonation_embed(
-                        parsed.username, matches[0], message.author
-                    ),
-                    mention_author=False,
-                    delete_after=90,
-                )
-                # Audit log impersonation attempt
-                async with AsyncSessionLocal() as audit_session:
-                    audit_session.add(AuditLog(
-                        guild_id=message.guild.id,
-                        user_id=message.author.id,
-                        username=str(message.author),
-                        action=AuditAction.LOG_REJECTED,
-                        detail={
-                            "reason": "impersonation",
-                            "parsed_name": parsed.username,
-                            "real_owner_id": str(matches[0].id),
-                            "real_owner_name": matches[0].display_name,
-                        },
-                        created_at=utcnow(),
-                    ))
-                    await audit_session.commit()
-            except discord.HTTPException:
-                pass
-            return
+        # Chú ý: pre-check display_name match cũ ĐÃ BỎ vì không phù hợp với format
+        # mới — tên ingame (vd "Báo Lê (CP890743)") khác display_name Discord
+        # (vd "! VT | Null"). Bot dùng identity binding (xem _save_duty_log Tầng -1):
+        # - Lần đầu user X chấm với tên T → tạo binding (X, T)
+        # - Lần sau X chấm tên khác T → reject với message rõ
+        # - Y chấm tên T đã thuộc X → reject impersonation
+        # Binding logic trả ValueError → handler bên dưới hiển thị embed đầy đủ.
 
         # Lưu DB
         async with AsyncSessionLocal() as session:
@@ -931,48 +867,8 @@ class LogDutyCog(commands.Cog):
             )
             return
 
-        # ── STRICT: tên DUY NHẤT thuộc về người gửi (chống impersonation qua nick) ──
-        status, matches = _resolve_name_owner(interaction.guild, parsed.username)
-        if status == "none":
-            await interaction.followup.send(
-                embed=build_log_name_mismatch_embed(parsed.username, interaction.user),
-                ephemeral=True,
-            )
-            return
-        if status == "ambiguous":
-            await interaction.followup.send(
-                embed=build_log_ambiguous_name_embed(parsed.username, matches, interaction.user),
-                ephemeral=True,
-            )
-            return
-        if matches[0].id != interaction.user.id:
-            logger.warning(
-                f"[/log upload] IMPERSONATION: user={interaction.user.id} "
-                f"({interaction.user.display_name}) cố gắng chấm công cho "
-                f"{matches[0].id} ({matches[0].display_name})"
-            )
-            async with AsyncSessionLocal() as audit_session:
-                audit_session.add(AuditLog(
-                    guild_id=interaction.guild_id,
-                    user_id=interaction.user.id,
-                    username=str(interaction.user),
-                    action=AuditAction.LOG_REJECTED,
-                    detail={
-                        "reason": "impersonation",
-                        "source": "ocr",
-                        "parsed_name": parsed.username,
-                        "real_owner_id": str(matches[0].id),
-                    },
-                    created_at=utcnow(),
-                ))
-                await audit_session.commit()
-            await interaction.followup.send(
-                embed=build_log_impersonation_embed(
-                    parsed.username, matches[0], interaction.user
-                ),
-                ephemeral=True,
-            )
-            return
+        # Chú ý: pre-check display_name match cũ ĐÃ BỎ — binding logic trong
+        # _save_duty_log sẽ verify khi user nhấn Confirm.
 
         target_id = interaction.user.id
         parsed_data = {
@@ -1038,48 +934,8 @@ class LogDutyCog(commands.Cog):
             )
             return
 
-        # ── STRICT: tên DUY NHẤT thuộc về người gửi (chống impersonation qua nick) ──
-        status, matches = _resolve_name_owner(interaction.guild, parsed.username)
-        if status == "none":
-            await interaction.followup.send(
-                embed=build_log_name_mismatch_embed(parsed.username, interaction.user),
-                ephemeral=True,
-            )
-            return
-        if status == "ambiguous":
-            await interaction.followup.send(
-                embed=build_log_ambiguous_name_embed(parsed.username, matches, interaction.user),
-                ephemeral=True,
-            )
-            return
-        if matches[0].id != interaction.user.id:
-            logger.warning(
-                f"[/log forward] IMPERSONATION: user={interaction.user.id} "
-                f"({interaction.user.display_name}) cố gắng chấm công cho "
-                f"{matches[0].id} ({matches[0].display_name})"
-            )
-            async with AsyncSessionLocal() as audit_session:
-                audit_session.add(AuditLog(
-                    guild_id=interaction.guild_id,
-                    user_id=interaction.user.id,
-                    username=str(interaction.user),
-                    action=AuditAction.LOG_REJECTED,
-                    detail={
-                        "reason": "impersonation",
-                        "source": "forward",
-                        "parsed_name": parsed.username,
-                        "real_owner_id": str(matches[0].id),
-                    },
-                    created_at=utcnow(),
-                ))
-                await audit_session.commit()
-            await interaction.followup.send(
-                embed=build_log_impersonation_embed(
-                    parsed.username, matches[0], interaction.user
-                ),
-                ephemeral=True,
-            )
-            return
+        # Chú ý: pre-check display_name match cũ ĐÃ BỎ — binding logic trong
+        # _save_duty_log sẽ verify khi user nhấn Confirm.
 
         target_id = interaction.user.id
         parsed_data = {
