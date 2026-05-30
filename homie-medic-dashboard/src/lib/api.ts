@@ -686,6 +686,42 @@ export const api = {
       },
     ),
 
+  // Rebind: đổi current_ingame_name trong binding cho 1 user_id.
+  // KHÁC với rename — KHÔNG đổi log cũ, chỉ đổi tên mà bot expect ở lần chấm sau.
+  rebindUser: (guild_id: string, target_user_id: string, new_ingame_name: string, note: string) =>
+    apiFetch<{ success: boolean; original_ingame_name: string; old_name: string; new_name: string }>(
+      '/api/dashboard/logs/rebind',
+      {
+        method: 'POST',
+        body: { guild_id, target_user_id, new_ingame_name, note },
+      },
+    ),
+
+  listBindings: (guild_id: string) =>
+    apiFetch<{
+      items: Array<{
+        discord_user_id: string;
+        original_ingame_name: string;
+        current_ingame_name: string;
+        is_renamed: boolean;
+        rebind_count: number;
+        log_count: number;
+        first_seen_at: string | null;
+        last_seen_at: string | null;
+        history: Array<{ from: string; to: string; by: string; by_name?: string; at: string; reason: string; via?: string }>;
+      }>;
+    }>('/api/dashboard/logs/bindings', { query: { guild_id } }),
+
+  // Wipe all duty_logs trong guild — chỉ bot owner. Confirm 2 lần ở UI.
+  wipeGuildLogs: (guild_id: string, confirm_phrase: string) =>
+    apiFetch<{ success: boolean; deleted_logs: number; reset_bindings: number; guild_id: string }>(
+      '/api/admin/wipe-logs',
+      {
+        method: 'POST',
+        body: { guild_id, confirm_phrase },
+      },
+    ),
+
   // ----- SCHEDULE -----
   // Backend /grid trả {items: [{user_id, username, schedules: [{weekday, start_time, end_time, ...}]}]}
   // — group by user. Frontend cần group by day để render calendar grid.

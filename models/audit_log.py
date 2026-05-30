@@ -21,6 +21,8 @@ class AuditAction:
     LOG_DELETED = "LOG_DELETED"
     LOG_REJECTED = "LOG_REJECTED"
     LOG_RENAMED = "LOG_RENAMED"   # Admin đổi tên (mass rename theo old_name)
+    LOG_REBIND = "LOG_REBIND"     # Admin đổi binding ingame_name của 1 user_id
+    LOG_WIPED = "LOG_WIPED"       # Bot owner xoá toàn bộ duty_logs của guild
     CHANGE_ROLE_CONFIG = "CHANGE_ROLE_CONFIG"
     CHANGE_CHANNEL_CONFIG = "CHANGE_CHANNEL_CONFIG"
     SETUP_GUILD = "SETUP_GUILD"

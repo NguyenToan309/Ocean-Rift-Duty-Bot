@@ -19,6 +19,7 @@ from models.base import AsyncSessionLocal
 from models.duty_log import DutyLog
 from models.guild import GuildConfig
 from models.audit_log import AuditLog, AuditAction
+from models.duty_identity_binding import DutyIdentityBinding
 from bot.utils.ocr import extract_duty_from_image, warmup_ocr
 from bot.utils.parser import parse_duty_text
 from bot.utils.permissions import require_member, require_mod, require_admin, send_no_permission, DutyRole
@@ -227,35 +228,81 @@ async def _save_duty_log(
         Cho phép ca liên tiếp (kết thúc = bắt đầu ca tiếp).
     """
     now = utcnow()
+    username_stripped = username.strip()
 
-    # ── Tầng -1: Username lock — chống impersonation triệt để ──
-    # Mỗi `username` (sau normalize) trong 1 guild chỉ được thuộc về 1 user_id duy nhất.
-    # User đầu tiên submit log với tên X → tên X locked vào user_id đó forever.
-    # User khác cố gắng dùng tên X → REJECT.
+    # ── Tầng -1: Identity binding (chống impersonation chính xác qua user_id) ──
+    # Lần đầu user_id chấm với tên X → tạo binding (user_id → current_ingame=X).
+    # Lần sau: log phải khớp current_ingame_name CHÍNH XÁC (phân biệt hoa thường).
+    # Khác → reject.
     #
-    # Đây là phòng tuyến cuối: ngay cả khi attacker bypass identity check
-    # (đổi nick thành tên victim), DB sẽ chặn vì username đã có owner khác.
-    parsed_lower = username.strip().lower()
-    if parsed_lower:
-        existing_owner = await session.execute(
-            select(DutyLog.user_id)
-            .where(DutyLog.guild_id == guild_id)
-            .where(func.lower(func.trim(DutyLog.username)) == parsed_lower)
-            .order_by(DutyLog.id.asc())
-            .limit(1)
+    # Cross-user check: tên ingame này đã thuộc user_id khác → reject impersonation.
+    if username_stripped:
+        # Lookup binding của user_id này trong guild
+        own_binding_row = await session.execute(
+            select(DutyIdentityBinding)
+            .where(DutyIdentityBinding.guild_id == guild_id)
+            .where(DutyIdentityBinding.discord_user_id == user_id)
         )
-        first_owner_id = existing_owner.scalar_one_or_none()
-        if first_owner_id is not None and first_owner_id != user_id:
-            logger.warning(
-                f"[username-lock] User {user_id} cố gắng dùng tên '{username}' "
-                f"đã thuộc về user {first_owner_id} (lưu trước đó)"
+        own_binding = own_binding_row.scalar_one_or_none()
+
+        # Lookup binding nào đang giữ tên này (case-sensitive)
+        name_owner_row = await session.execute(
+            select(DutyIdentityBinding)
+            .where(DutyIdentityBinding.guild_id == guild_id)
+            .where(DutyIdentityBinding.current_ingame_name == username_stripped)
+        )
+        name_owner = name_owner_row.scalar_one_or_none()
+
+        if own_binding is None:
+            # Scenario 1 hoặc 4 — user này chưa từng chấm
+            if name_owner is not None:
+                # Scenario 4: tên ingame đã thuộc user khác → IMPERSONATION
+                logger.warning(
+                    f"[binding] User {user_id} cố gắng chấm tên '{username_stripped}' "
+                    f"đã thuộc về user {name_owner.discord_user_id}"
+                )
+                raise ValueError(
+                    f"Tên ingame **{username_stripped}** đã thuộc về tài khoản Discord khác. "
+                    "Bạn không thể chấm công với tên này.\n\n"
+                    "Nếu đây thực sự là tên của bạn, **liên hệ admin** chạy "
+                    "`/log rebind` để xử lý."
+                )
+            # Scenario 1: tạo binding mới. log_count=1 vì đây là log đầu tiên đang
+            # được lưu. Nếu các tầng 0-3 sau đó reject, transaction rollback nên
+            # binding cũng không persist — count vẫn nhất quán.
+            own_binding = DutyIdentityBinding(
+                guild_id=guild_id,
+                discord_user_id=user_id,
+                original_ingame_name=username_stripped,
+                current_ingame_name=username_stripped,
+                first_seen_at=now,
+                last_seen_at=now,
+                log_count=1,
+                rebind_count=0,
+                rebind_history=[],
             )
-            raise ValueError(
-                f"Tên **{username}** đã được dùng bởi tài khoản khác trước đây. "
-                "Bạn không thể chấm công với tên này.\n\n"
-                "Nếu đây là tên thật của bạn (có user khác đã chiếm trước), "
-                "**vui lòng liên hệ ban lãnh đạo** để xử lý."
+            session.add(own_binding)
+            logger.info(
+                f"[binding] Tạo binding mới: guild={guild_id} user={user_id} "
+                f"name='{username_stripped}'"
             )
+        else:
+            # Scenario 2 hoặc 3 — user này đã có binding
+            if own_binding.current_ingame_name != username_stripped:
+                # Scenario 3: log dùng tên KHÁC current (đã đổi character?)
+                logger.info(
+                    f"[binding] User {user_id} chấm tên '{username_stripped}' "
+                    f"nhưng binding hiện tại = '{own_binding.current_ingame_name}'"
+                )
+                raise ValueError(
+                    f"Tên ingame trong log **{username_stripped}** không khớp với tên "
+                    f"đã đăng ký của bạn (**{own_binding.current_ingame_name}**).\n\n"
+                    "Nếu bạn đã đổi tên character ingame, **liên hệ admin** chạy "
+                    "`/log rebind` để cập nhật."
+                )
+            # Scenario 2: khớp current_ingame_name — update last_seen + count
+            own_binding.last_seen_at = now
+            own_binding.log_count = (own_binding.log_count or 0) + 1
 
     # ── Tầng 0: Không cho phép ca trực ở tương lai ──
     if started_at > now + timedelta(minutes=30):
@@ -1410,11 +1457,251 @@ class LogDutyCog(commands.Cog):
             ephemeral=True,
         )
 
+    @log_group.command(
+        name="rebind",
+        description="Đổi tên ingame binding của 1 user (giữ tên cũ làm reference, CHỈ Admin)",
+    )
+    @app_commands.describe(
+        nguoi_dung="Discord user cần đổi binding",
+        ten_ingame_moi="Tên ingame mới (case-sensitive — '@VP|Hắc Y Đạo Sư' khác 'Hắc y đạo sư')",
+        ly_do="Lý do đổi (≥3 ký tự, audit log)",
+    )
+    @app_commands.checks.cooldown(rate=3, per=60.0)
+    async def log_rebind(
+        self,
+        interaction: discord.Interaction,
+        nguoi_dung: discord.Member,
+        ten_ingame_moi: str,
+        ly_do: str,
+    ):
+        """Cập nhật current_ingame_name của binding (giữ original) cho 1 user.
+
+        KHÔNG đổi username trong các log cũ trong duty_logs — chỉ binding.
+        Lần sau user chấm với tên mới sẽ được nhận.
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        new_name = ten_ingame_moi.strip()
+        reason = ly_do.strip()
+
+        if not new_name:
+            await interaction.followup.send(
+                embed=build_error_embed("Tên ingame mới không được rỗng."),
+                ephemeral=True,
+            )
+            return
+        if len(reason) < 3:
+            await interaction.followup.send(
+                embed=build_error_embed("Phải ghi lý do (≥3 ký tự)."),
+                ephemeral=True,
+            )
+            return
+        if len(new_name) > 100:
+            await interaction.followup.send(
+                embed=build_error_embed("Tên mới quá dài (tối đa 100 ký tự)."),
+                ephemeral=True,
+            )
+            return
+
+        async with AsyncSessionLocal() as session:
+            if not await require_admin(interaction, session):
+                await send_no_permission(interaction, DutyRole.ADMIN)
+                return
+
+            # Lookup binding của target user
+            row = await session.execute(
+                select(DutyIdentityBinding)
+                .where(DutyIdentityBinding.guild_id == interaction.guild_id)
+                .where(DutyIdentityBinding.discord_user_id == nguoi_dung.id)
+            )
+            binding = row.scalar_one_or_none()
+            if binding is None:
+                await interaction.followup.send(
+                    embed=build_error_embed(
+                        f"User {nguoi_dung.mention} chưa có binding (chưa từng chấm công). "
+                        "Khi họ chấm lần đầu, binding sẽ được tạo tự động với tên trong log."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            old_name = binding.current_ingame_name
+            if old_name == new_name:
+                await interaction.followup.send(
+                    embed=build_error_embed(
+                        f"Tên mới giống tên hiện tại ('{new_name}'). Không cần đổi."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Conflict check: tên mới đã thuộc user khác?
+            conflict_row = await session.execute(
+                select(DutyIdentityBinding)
+                .where(DutyIdentityBinding.guild_id == interaction.guild_id)
+                .where(DutyIdentityBinding.current_ingame_name == new_name)
+                .where(DutyIdentityBinding.discord_user_id != nguoi_dung.id)
+            )
+            conflict = conflict_row.scalar_one_or_none()
+            if conflict is not None:
+                await interaction.followup.send(
+                    embed=build_error_embed(
+                        f"Tên mới '{new_name}' đã thuộc về user khác "
+                        f"(<@{conflict.discord_user_id}>). Không thể bind."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Update binding — giữ original_ingame_name, append history
+            history = list(binding.rebind_history or [])
+            history.append({
+                "from": old_name,
+                "to": new_name,
+                "by": str(interaction.user.id),
+                "by_name": str(interaction.user),
+                "at": utcnow().isoformat(),
+                "reason": reason,
+            })
+            binding.current_ingame_name = new_name
+            binding.rebind_count = (binding.rebind_count or 0) + 1
+            binding.rebind_history = history
+
+            session.add(AuditLog(
+                guild_id=interaction.guild_id,
+                user_id=interaction.user.id,
+                username=str(interaction.user),
+                action=AuditAction.LOG_REBIND,
+                detail={
+                    "target_user_id": str(nguoi_dung.id),
+                    "target_username": str(nguoi_dung),
+                    "original_ingame_name": binding.original_ingame_name,
+                    "from": old_name,
+                    "to": new_name,
+                    "reason": reason,
+                },
+                created_at=utcnow(),
+            ))
+            await session.commit()
+
+        await interaction.followup.send(
+            embed=build_success_embed(
+                f"Đã đổi binding của {nguoi_dung.mention}:\n"
+                f"• Tên gốc (lần đầu): `{binding.original_ingame_name}`\n"
+                f"• Tên cũ: `{old_name}`\n"
+                f"• Tên mới: `{new_name}`\n\n"
+                f"Log cũ trong DB giữ nguyên tên. Lần sau chấm với tên mới sẽ được nhận."
+            ),
+            ephemeral=True,
+        )
+
+    @log_group.command(
+        name="wipe",
+        description="⚠️ XOÁ TOÀN BỘ duty log của guild (CHỈ Bot Owner — DESTRUCTIVE)",
+    )
+    @app_commands.describe(
+        confirm_phrase="Gõ chính xác 'XOA-{guild_id}' để xác nhận lần 1",
+    )
+    @app_commands.checks.cooldown(rate=1, per=300.0)
+    async def log_wipe(
+        self,
+        interaction: discord.Interaction,
+        confirm_phrase: str,
+    ):
+        """Xoá toàn bộ duty_logs trong guild hiện tại + reset binding log_count.
+
+        Bảo vệ 2 tầng:
+        1. Người gọi phải nằm trong BOT_OWNER_IDS (env)
+        2. Phải gõ đúng phrase 'XOA-{guild_id}' để confirm
+
+        Audit log ghi count rows đã xoá để có thể tra sau.
+        """
+        from bot.config import settings as _settings
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Bảo vệ tầng 1: chỉ bot owner
+        if int(interaction.user.id) not in _settings.BOT_OWNER_IDS:
+            await interaction.followup.send(
+                embed=build_error_embed(
+                    "Lệnh này CHỈ bot owner được dùng. "
+                    "DUTY_ADMIN của guild không có quyền (action quá destructive)."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Bảo vệ tầng 2: confirm phrase phải khớp guild_id hiện tại
+        expected = f"XOA-{interaction.guild_id}"
+        if confirm_phrase.strip() != expected:
+            await interaction.followup.send(
+                embed=build_error_embed(
+                    f"Phrase xác nhận sai. Phải gõ chính xác:\n"
+                    f"```\n{expected}\n```\n"
+                    "Bạn gõ: `{}`".format(confirm_phrase.strip())
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Đếm trước khi xoá để báo cáo + audit
+        async with AsyncSessionLocal() as session:
+            count_row = await session.execute(
+                select(func.count(DutyLog.id))
+                .where(DutyLog.guild_id == interaction.guild_id)
+            )
+            log_count = count_row.scalar() or 0
+
+            binding_count_row = await session.execute(
+                select(func.count(DutyIdentityBinding.discord_user_id))
+                .where(DutyIdentityBinding.guild_id == interaction.guild_id)
+            )
+            binding_count = binding_count_row.scalar() or 0
+
+            # Xoá toàn bộ
+            from sqlalchemy import delete as sql_delete
+            await session.execute(
+                sql_delete(DutyLog).where(DutyLog.guild_id == interaction.guild_id)
+            )
+            # Reset binding.log_count → 0 (giữ binding để admin còn thấy tên cũ/lịch sử)
+            from sqlalchemy import update as sql_update
+            await session.execute(
+                sql_update(DutyIdentityBinding)
+                .where(DutyIdentityBinding.guild_id == interaction.guild_id)
+                .values(log_count=0)
+            )
+
+            session.add(AuditLog(
+                guild_id=interaction.guild_id,
+                user_id=interaction.user.id,
+                username=str(interaction.user),
+                action=AuditAction.LOG_WIPED,
+                detail={
+                    "deleted_logs": log_count,
+                    "reset_bindings": binding_count,
+                    "confirm_phrase": expected,
+                },
+                created_at=utcnow(),
+            ))
+            await session.commit()
+
+        await interaction.followup.send(
+            embed=build_success_embed(
+                f"⚠️ **WIPE HOÀN TẤT**\n\n"
+                f"• Đã xoá: **{log_count}** duty log\n"
+                f"• Đã reset log_count: **{binding_count}** binding (binding giữ nguyên)\n\n"
+                f"Audit log đã ghi event LOG_WIPED. Action này KHÔNG hoàn tác được."
+            ),
+            ephemeral=True,
+        )
+
     @log_upload.error
     @log_forward.error
     @log_view.error
     @log_delete.error
     @log_rename.error
+    @log_rebind.error
+    @log_wipe.error
     async def on_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CommandOnCooldown):
             await interaction.response.send_message(
