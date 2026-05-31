@@ -95,12 +95,16 @@ _FIELD_DISCORD = re.compile(
     re.IGNORECASE,
 )
 _FIELD_DURATION_V2 = re.compile(
-    # "1 Giờ 10 Phút" hoặc "18 Phút" hoặc "1 Giờ" (group h và m optional).
-    # G\S{1,3} match "Giờ"/"Gio"/"Gìò"/"Già"... — OCR có thể đọc nhầm cả "i"
-    # thành "ì"/"í" nên không hard-code "Gi".
+    # 3 unit có thể combine: "1 Giờ 10 Phút 39 Giây" / "39 Giây" / "7 Phút".
+    # Tất cả group optional, nhưng ít nhất 1 phải có (kiểm tra ngoài).
+    #
+    # Phân biệt "Giờ" và "Giây": cả 2 bắt đầu "Gi" nhưng "Giây" kết thúc bằng "y".
+    # Hours pattern dùng lookbehind (?<![yY]) để KHÔNG match "Giây".
+    # Seconds pattern bắt buộc kết thúc bằng "y" để phân biệt.
     r"T\S{0,2}ng\s*th\S{0,2}i\s*gian\s*" + _LABEL_SEP + r"\s*"
-    r"(?:(?P<hours>\d+)\s*G\S{1,3})?\s*"
-    r"(?:(?P<minutes>\d+)\s*Ph\S{0,2}t)?",
+    r"(?:(?P<hours>\d+)\s*G\S{1,3}(?<![yY])(?=\s|$|\d))?\s*"
+    r"(?:(?P<minutes>\d+)\s*Ph\S{0,2}t)?\s*"
+    r"(?:(?P<seconds>\d+)\s*G\S{1,3}y)?",
     re.IGNORECASE,
 )
 _FIELD_START = re.compile(
@@ -222,14 +226,22 @@ def _parse_v2(text: str) -> ParsedDutyLog | None:
     if not (name_m and start_m and end_m and duration_m):
         return None
 
-    # Duration: gộp "X Giờ Y Phút" → total minutes
+    # Duration: gộp "X Giờ Y Phút Z Giây" → total minutes (round up nếu có giây)
     hours = duration_m.group("hours")
     minutes = duration_m.group("minutes")
-    if not hours and not minutes:
+    seconds = duration_m.group("seconds")
+    if not hours and not minutes and not seconds:
         return None
-    total_minutes = (int(hours) * 60 if hours else 0) + (int(minutes) if minutes else 0)
-    if total_minutes <= 0:
+    total_seconds = (
+        (int(hours) * 3600 if hours else 0)
+        + (int(minutes) * 60 if minutes else 0)
+        + (int(seconds) if seconds else 0)
+    )
+    if total_seconds <= 0:
         return None
+    # Round up: ca ngắn (vd 39 giây) vẫn ghi nhận = 1 phút để qua validation
+    # duration > 0. Validation tolerance ±5 phút sẽ bao trùm.
+    total_minutes = max(1, (total_seconds + 30) // 60)
 
     try:
         started_at = _parse_datetime(start_m.group("started_at"))
