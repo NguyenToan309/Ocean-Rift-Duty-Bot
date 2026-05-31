@@ -70,33 +70,50 @@ DUTY_LOG_LOOSE_PATTERN_V1 = re.compile(
 #   - "Lý do rời", "❓ Lý do rời" (optional)
 
 # Sub-pattern dùng để extract từng field riêng — không gộp 1 regex dài vì
-# thứ tự field trong OCR có thể không cố định (Discord có thể trước hoặc sau Tên)
+# thứ tự field trong OCR có thể không cố định.
+#
+# OCR-tolerant: thay vì match chính xác ký tự tiếng Việt (vd "ê", "ổ"), dùng
+# \S{0,2} cho ký tự có dấu. Cách này match được:
+# - Tên / Tên / Ten / Tèn / Tên (OCR đọc nhầm dấu)
+# - Tổng / Tong / Tỗng / Tống
+# - Bắt / Bat / Bặt / Bât
+# - Kết / Ket / Kểt
+# - Phút / Phut / Phưt
+# - Giờ / Gio / Gìờ
+#
+# Dấu phân tách label-value: chấp nhận :, ：, ; (OCR đôi khi đọc nhầm).
+
+_LABEL_SEP = r"[:：;]"
 _FIELD_NAME = re.compile(
-    r"T[êéè]n\s*[:：]\s*(?P<name>[^\n]+)",
+    r"T\S{0,2}n\s*" + _LABEL_SEP + r"\s*(?P<name>[^\n]+)",
     re.IGNORECASE,
 )
 _FIELD_DISCORD = re.compile(
-    # Match "Discord:" hoặc "Tên discord:" / "Tên Discord:"
-    r"(?:T[êéè]n\s+)?Discord\s*[:：]\s*(?P<discord>[^\n]+)",
+    # Match "Discord:" hoặc "Tên discord:" / "Tên Discord:" — Discord là tên
+    # riêng tiếng Anh nên thường OCR đọc đúng, không cần loose.
+    r"(?:T\S{0,2}n\s+)?Discord\s*" + _LABEL_SEP + r"\s*(?P<discord>[^\n]+)",
     re.IGNORECASE,
 )
 _FIELD_DURATION_V2 = re.compile(
-    # "1 Giờ 10 Phút" hoặc "18 Phút" hoặc "1 Giờ" (group h và m optional)
-    r"T[ổô]ng\s*th[ờo]i\s*gian\s*[:：]\s*"
-    r"(?:(?P<hours>\d+)\s*Gi[ờo])?\s*"
-    r"(?:(?P<minutes>\d+)\s*Ph[uúù]t)?",
+    # "1 Giờ 10 Phút" hoặc "18 Phút" hoặc "1 Giờ" (group h và m optional).
+    # G\S{1,3} match "Giờ"/"Gio"/"Gìò"/"Già"... — OCR có thể đọc nhầm cả "i"
+    # thành "ì"/"í" nên không hard-code "Gi".
+    r"T\S{0,2}ng\s*th\S{0,2}i\s*gian\s*" + _LABEL_SEP + r"\s*"
+    r"(?:(?P<hours>\d+)\s*G\S{1,3})?\s*"
+    r"(?:(?P<minutes>\d+)\s*Ph\S{0,2}t)?",
     re.IGNORECASE,
 )
 _FIELD_START = re.compile(
-    r"B[ắâ]t\s*[dđ][ầâ]u\s*[:：]\s*(?P<started_at>" + _DATETIME_PAT + r")",
+    # "Bắt đầu" / "Bat dau" / "Bặt dầu"...
+    r"B\S{0,2}t\s+[dđ]\S{0,2}u\s*" + _LABEL_SEP + r"\s*(?P<started_at>" + _DATETIME_PAT + r")",
     re.IGNORECASE,
 )
 _FIELD_END = re.compile(
-    r"K[ếê]t\s*th[uú]c\s*[:：]\s*(?P<ended_at>" + _DATETIME_PAT + r")",
+    r"K\S{0,2}t\s*th\S{0,2}c\s*" + _LABEL_SEP + r"\s*(?P<ended_at>" + _DATETIME_PAT + r")",
     re.IGNORECASE,
 )
 _FIELD_REASON = re.compile(
-    r"L[yý]\s*do\s*r[ờo]i\s*[:：]\s*(?P<reason>[^\n]+)",
+    r"L\S{0,2}\s*do\s*r\S{0,2}i\s*" + _LABEL_SEP + r"\s*(?P<reason>[^\n]+)",
     re.IGNORECASE,
 )
 

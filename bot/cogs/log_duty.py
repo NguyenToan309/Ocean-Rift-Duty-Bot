@@ -893,72 +893,9 @@ class LogDutyCog(commands.Cog):
         msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         view.set_message(msg)
 
-    @log_group.command(name="forward", description="Paste text LOG DUTY của bạn để lưu thủ công")
-    @app_commands.describe(text="Nội dung LOG DUTY (copy paste từ bot chấm công)")
-    @app_commands.checks.cooldown(rate=5, per=60.0)
-    async def log_forward(
-        self,
-        interaction: discord.Interaction,
-        text: str,
-    ):
-        """
-        STRICT MODE: Mỗi user chỉ được forward log của CHÍNH MÌNH.
-        Mod/Admin cũng KHÔNG được forward hộ — đảm bảo tính chính xác và truy vết.
-        """
-        await interaction.response.defer(ephemeral=True)
-
-        async with AsyncSessionLocal() as session:
-            if not await require_member(interaction, session):
-                await send_no_permission(interaction, DutyRole.MEMBER)
-                return
-
-        parsed = parse_duty_text(text)
-        if parsed is None:
-            await interaction.followup.send(
-                embed=build_error_embed(
-                    "Không nhận diện được định dạng LOG DUTY.\n"
-                    "Vui lòng copy đúng định dạng:\n"
-                    "```\nLOG DUTY\nTên: ...\nThời gian làm việc: X phút\n"
-                    "Thời gian bắt đầu: DD/MM/YYYY HH:MM:SS\n"
-                    "Thời gian kết thúc: DD/MM/YYYY HH:MM:SS\n```"
-                ),
-                ephemeral=True,
-            )
-            return
-
-        errors = parsed.validate()
-        if errors:
-            await interaction.followup.send(
-                embed=build_error_embed("Dữ liệu không hợp lệ:\n• " + "\n• ".join(errors)),
-                ephemeral=True,
-            )
-            return
-
-        # Chú ý: pre-check display_name match cũ ĐÃ BỎ — binding logic trong
-        # _save_duty_log sẽ verify khi user nhấn Confirm.
-
-        target_id = interaction.user.id
-        parsed_data = {
-            "username": parsed.username,
-            "user_discord_id": target_id,
-            "duration_minutes": parsed.duration_minutes,
-            "started_at": to_utc(parsed.started_at),
-            "ended_at": to_utc(parsed.ended_at),
-            "raw_text": parsed.raw_text,
-            "source": "forward",
-            "source_message_id": None,
-            "discord_handle": parsed.discord_handle,
-            "exit_reason": parsed.exit_reason,
-        }
-
-        async with AsyncSessionLocal() as session:
-            config = await _get_guild_config(session, interaction.guild_id)
-            tz = config.timezone if config else None
-
-        embed = build_log_confirm_embed(parsed_data, tz, parsed.is_loose_match)
-        view = ConfirmLogView(parsed_data, interaction.user.id, interaction.guild_id)
-        msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        view.set_message(msg)
+    # /log forward đã bị bỏ — user paste text thẳng vào channel chấm công để
+    # auto-scan xử lý (on_message). Loại bỏ command này để giảm nhầm lẫn — 1
+    # cách paste, 1 cách upload ảnh, không có overlap.
 
     @log_group.command(name="view", description="Xem lịch sử chấm công")
     @app_commands.describe(
@@ -1552,7 +1489,6 @@ class LogDutyCog(commands.Cog):
         )
 
     @log_upload.error
-    @log_forward.error
     @log_view.error
     @log_delete.error
     @log_rename.error
