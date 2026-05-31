@@ -350,6 +350,41 @@ class TestParseV2:
         # 22:43 → 23:01:58 = ~18.9 phút, ghi 18 → chênh < 5 → OK
         assert r.validate() == []
 
+    def test_v2_ocr_no_diacritics(self):
+        """OCR trên ảnh thường MẤT dấu tiếng Việt — parser V2 phải vẫn nhận
+
+        Đây là use case `/log upload` (EasyOCR đôi khi trả "Ten" thay vì "Tên",
+        "Phut" thay vì "Phút"). Trước fix loose-regex: parser fail → user thấy
+        "Không tìm thấy định dạng LOG DUTY trong ảnh".
+        """
+        ocr_text = (
+            "CAPY TOWN LOGS\n"
+            "Ten: Bao Le (CP890743)\n"
+            "Ten discord: @VT | Bao\n"
+            "Tong thoi gian: 40 Phut\n"
+            "Bat dau: 31/05/2026 00:58:50\n"
+            "Ket thuc: 31/05/2026 01:39:05"
+        )
+        r = parse_duty_text(ocr_text)
+        assert r is not None
+        assert r.username == "Bao Le (CP890743)"
+        assert r.duration_minutes == 40
+        assert r.discord_handle == "@VT | Bao"
+        assert r.format_version == 2
+
+    def test_v2_ocr_wrong_diacritics(self):
+        """OCR đôi khi ĐOÁN SAI dấu — vẫn phải parse được"""
+        wrong = (
+            "CAPY TOWN LOGS\n"
+            "Tèn: Test\n"
+            "Tống thới gian: 1 Gìò 28 Phứt\n"
+            "Bặt dầu: 31/05/2026 21:50:10\n"
+            "Kệt thúc: 31/05/2026 23:18:21"
+        )
+        r = parse_duty_text(wrong)
+        assert r is not None
+        assert r.duration_minutes == 88   # 1*60 + 28
+
     def test_v1_still_works(self):
         """V1 (LOG DUTY cũ) vẫn parse được sau khi thêm V2 — backward compat"""
         text = (
