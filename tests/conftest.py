@@ -187,6 +187,17 @@ def make_session(*execute_return_values) -> AsyncMock:
         call_idx[0] += 1
         val = values[idx] if idx < len(values) else None
         result.scalar_one_or_none.return_value = val
+        # Support cho code dùng `.scalars().all()` — chấp nhận val là list,
+        # tuple, hoặc single object. None → [].
+        if val is None:
+            list_val = []
+        elif isinstance(val, (list, tuple)):
+            list_val = list(val)
+        else:
+            list_val = [val]
+        scalars_proxy = MagicMock()
+        scalars_proxy.all.return_value = list_val
+        result.scalars.return_value = scalars_proxy
         return result
 
     session.execute = mock_execute
