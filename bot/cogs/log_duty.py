@@ -193,6 +193,34 @@ class ConfirmLogView(discord.ui.View):
         self.stop()
 
 
+def _canonical_ingame_name(name: str) -> str:
+    """Rút gọn tên ingame để so sánh binding: bỏ phần trong ngoặc.
+
+    Mục đích: tên trong format CAPY TOWN LOGS có dạng "<Tên character> (<info>)"
+    trong đó info có thể là Char ID ổn định (vd "CP890743") HOẶC tên Steam của
+    người chơi (vd "Báo Lê Văm") — Steam name có thể đổi tuỳ lúc, không nên
+    dùng làm khoá nhận dạng.
+
+    Ta chỉ giữ phần TRƯỚC dấu ngoặc đầu tiên ('(' '（' '[') làm canonical, vì
+    tên character đứng đầu là phần ít đổi nhất.
+
+    Phân biệt hoa thường (Báo ≠ BÁO) — match cơ chế binding khi compare.
+
+    Ví dụ:
+        "Báo Lê (CP890743)"        → "Báo Lê"
+        "Báo Lê (Báo Lê Văm)"      → "Báo Lê"
+        "HẮC Y ĐẠO SƯ (ThanhMaxx)" → "HẮC Y ĐẠO SƯ"
+        "Báo Lê"                    → "Báo Lê"
+        "(CP890743)"                → "(CP890743)" (không có phần trước → giữ nguyên)
+    """
+    import re as _re
+    s = (name or "").strip()
+    cut = _re.search(r"[(（\[]", s)
+    if cut and cut.start() > 0:
+        s = s[: cut.start()]
+    return s.strip()
+
+
 async def _save_duty_log(
     session: AsyncSession,
     guild_id: int,
@@ -232,11 +260,14 @@ async def _save_duty_log(
 
     # ── Tầng -1: Identity binding (chống impersonation chính xác qua user_id) ──
     # Lần đầu user_id chấm với tên X → tạo binding (user_id → current_ingame=X).
-    # Lần sau: log phải khớp current_ingame_name CHÍNH XÁC (phân biệt hoa thường).
+    # Lần sau: log phải khớp current_ingame_name theo CANONICAL (bỏ phần trong
+    # ngoặc — đó là Char ID hoặc Steam name, đều thay đổi được).
     # Khác → reject.
     #
-    # Cross-user check: tên ingame này đã thuộc user_id khác → reject impersonation.
+    # Cross-user check: tên ingame canonical này đã thuộc user_id khác → reject.
     if username_stripped:
+        incoming_canonical = _canonical_ingame_name(username_stripped)
+
         # Lookup binding của user_id này trong guild
         own_binding_row = await session.execute(
             select(DutyIdentityBinding)
@@ -245,31 +276,38 @@ async def _save_duty_log(
         )
         own_binding = own_binding_row.scalar_one_or_none()
 
-        # Lookup binding nào đang giữ tên này (case-sensitive)
-        name_owner_row = await session.execute(
-            select(DutyIdentityBinding)
-            .where(DutyIdentityBinding.guild_id == guild_id)
-            .where(DutyIdentityBinding.current_ingame_name == username_stripped)
-        )
-        name_owner = name_owner_row.scalar_one_or_none()
-
         if own_binding is None:
-            # Scenario 1 hoặc 4 — user này chưa từng chấm
+            # Scenario 1 hoặc 4 — user này chưa từng chấm.
+            # Cross-user impersonation check: iterate bindings trong guild,
+            # tìm canonical match. Số binding 1-row/user nên chi phí thấp với
+            # guild <500 user. Nếu cần scale lớn hơn, thêm canonical_name
+            # column + functional index (migration sau).
+            other_bindings_row = await session.execute(
+                select(DutyIdentityBinding)
+                .where(DutyIdentityBinding.guild_id == guild_id)
+            )
+            name_owner = None
+            for b in other_bindings_row.scalars().all():
+                if _canonical_ingame_name(b.current_ingame_name) == incoming_canonical:
+                    name_owner = b
+                    break
+
             if name_owner is not None:
                 # Scenario 4: tên ingame đã thuộc user khác → IMPERSONATION
                 logger.warning(
-                    f"[binding] User {user_id} cố gắng chấm tên '{username_stripped}' "
-                    f"đã thuộc về user {name_owner.discord_user_id}"
+                    f"[binding] User {user_id} cố gắng chấm canonical='{incoming_canonical}' "
+                    f"(full='{username_stripped}') đã thuộc về user {name_owner.discord_user_id} "
+                    f"(binding='{name_owner.current_ingame_name}')"
                 )
                 raise ValueError(
-                    f"Tên ingame **{username_stripped}** đã thuộc về tài khoản Discord khác. "
+                    f"Tên ingame **{incoming_canonical}** đã thuộc về tài khoản Discord khác. "
                     "Bạn không thể chấm công với tên này.\n\n"
                     "Nếu đây thực sự là tên của bạn, **liên hệ admin** chạy "
                     "`/log rebind` để xử lý."
                 )
-            # Scenario 1: tạo binding mới. log_count=1 vì đây là log đầu tiên đang
-            # được lưu. Nếu các tầng 0-3 sau đó reject, transaction rollback nên
-            # binding cũng không persist — count vẫn nhất quán.
+            # Scenario 1: tạo binding mới. log_count=1 vì đây là log đầu tiên.
+            # Nếu các tầng 0-3 sau reject, transaction rollback nên binding
+            # cũng không persist — count vẫn nhất quán.
             own_binding = DutyIdentityBinding(
                 guild_id=guild_id,
                 discord_user_id=user_id,
@@ -284,23 +322,29 @@ async def _save_duty_log(
             session.add(own_binding)
             logger.info(
                 f"[binding] Tạo binding mới: guild={guild_id} user={user_id} "
-                f"name='{username_stripped}'"
+                f"name='{username_stripped}' canonical='{incoming_canonical}'"
             )
         else:
-            # Scenario 2 hoặc 3 — user này đã có binding
-            if own_binding.current_ingame_name != username_stripped:
-                # Scenario 3: log dùng tên KHÁC current (đã đổi character?)
+            # Scenario 2 hoặc 3 — user này đã có binding.
+            # Compare CANONICAL (bỏ phần trong ngoặc) thay vì exact match.
+            existing_canonical = _canonical_ingame_name(own_binding.current_ingame_name)
+            if existing_canonical != incoming_canonical:
+                # Scenario 3: log dùng tên character KHÁC (đã đổi character thật)
                 logger.info(
-                    f"[binding] User {user_id} chấm tên '{username_stripped}' "
-                    f"nhưng binding hiện tại = '{own_binding.current_ingame_name}'"
+                    f"[binding] User {user_id} chấm canonical='{incoming_canonical}' "
+                    f"(full='{username_stripped}') nhưng binding canonical='{existing_canonical}' "
+                    f"(full='{own_binding.current_ingame_name}')"
                 )
                 raise ValueError(
-                    f"Tên ingame trong log **{username_stripped}** không khớp với tên "
-                    f"đã đăng ký của bạn (**{own_binding.current_ingame_name}**).\n\n"
+                    f"Tên ingame trong log **{incoming_canonical}** không khớp với tên "
+                    f"đã đăng ký của bạn (**{existing_canonical}**).\n\n"
                     "Nếu bạn đã đổi tên character ingame, **liên hệ admin** chạy "
                     "`/log rebind` để cập nhật."
                 )
-            # Scenario 2: khớp current_ingame_name — update last_seen + count
+            # Scenario 2: canonical khớp — update last_seen + count.
+            # Phần trong ngoặc (Steam name / Char ID) có thể đã đổi giữa các lần
+            # chấm — KHÔNG update current_ingame_name. Admin xem qua /log rebind
+            # nếu muốn cập nhật tham chiếu.
             own_binding.last_seen_at = now
             own_binding.log_count = (own_binding.log_count or 0) + 1
 

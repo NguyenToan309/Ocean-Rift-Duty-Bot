@@ -346,9 +346,9 @@ class TestBindingLogic:
             first_seen_at=T_START, last_seen_at=T_START,
             log_count=5, rebind_count=0, rebind_history=[],
         )
-        # execute #1 = own_binding (existing), execute #2 = name_owner (skipped vì own match)
-        # Actually code reads name_owner regardless. Trả existing cho both.
-        session = make_session(existing, existing, None, None, None)
+        # execute #1 = own_binding (existing) → match → skip cross-user query.
+        # Sau đó: layer 1, 2, 3 — đều None.
+        session = make_session(existing, None, None, None)
         log = await _save_duty_log(**BASE_PARAMS, session=session)
         assert log is not None
         # Binding hiện có nên session.add chỉ thêm DutyLog (KHÔNG add binding mới)
@@ -385,10 +385,52 @@ class TestBindingLogic:
             first_seen_at=T_START, last_seen_at=T_START,
             log_count=1, rebind_count=0, rebind_history=[],
         )
-        # own_binding=None (chưa có), name_owner=other_user_binding (đã chiếm)
-        session = make_session(None, other_user_binding)
+        # own_binding=None (chưa có), cross-user iterate trả list [other_user_binding]
+        session = make_session(None, [other_user_binding])
         with pytest.raises(ValueError, match="thuộc về tài khoản Discord khác"):
             await _save_duty_log(**BASE_PARAMS, session=session)
+
+    async def test_scenario_canonical_match_ignores_parens(self):
+        """Tên trong ngoặc (Char ID / Steam name) thay đổi nhưng phần trước
+        khớp → ACCEPT. User case: 'Báo Lê (CP890743)' binding, log mới
+        'Báo Lê (Báo Lê Văm)' phải pass."""
+        from models.duty_identity_binding import DutyIdentityBinding
+        existing = DutyIdentityBinding(
+            guild_id=GUILD_ID,
+            discord_user_id=USER_ID,
+            original_ingame_name="Báo Lê (CP890743)",
+            current_ingame_name="Báo Lê (CP890743)",
+            first_seen_at=T_START, last_seen_at=T_START,
+            log_count=2, rebind_count=0, rebind_history=[],
+        )
+        session = make_session(existing, None, None, None)
+        log = await _save_duty_log(
+            **{**BASE_PARAMS, "username": "Báo Lê (Báo Lê Văm)"},  # Steam name khác
+            session=session,
+        )
+        assert log is not None
+        # canonical "Báo Lê" khớp → log_count tăng
+        assert existing.log_count == 3
+        # current_ingame_name KHÔNG đổi (chỉ /log rebind mới đổi)
+        assert existing.current_ingame_name == "Báo Lê (CP890743)"
+
+    async def test_scenario_canonical_different_chars_reject(self):
+        """Phần trước ngoặc khác → REJECT (character thật khác)"""
+        from models.duty_identity_binding import DutyIdentityBinding
+        existing = DutyIdentityBinding(
+            guild_id=GUILD_ID,
+            discord_user_id=USER_ID,
+            original_ingame_name="Báo Lê (CP890743)",
+            current_ingame_name="Báo Lê (CP890743)",
+            first_seen_at=T_START, last_seen_at=T_START,
+            log_count=1, rebind_count=0, rebind_history=[],
+        )
+        session = make_session(existing, None)
+        with pytest.raises(ValueError, match="không khớp"):
+            await _save_duty_log(
+                **{**BASE_PARAMS, "username": "Khoa Cool (CP890743)"},
+                session=session,
+            )
 
     async def test_scenario_case_sensitive_match(self):
         """Tên 'Báo Lê' và 'BÁO LÊ' coi là KHÁC nhau (phân biệt hoa thường)"""
