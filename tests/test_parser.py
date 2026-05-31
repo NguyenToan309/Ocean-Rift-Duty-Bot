@@ -372,6 +372,61 @@ class TestParseV2:
         assert r.discord_handle == "@VT | Bao"
         assert r.format_version == 2
 
+    def test_v2_with_emoji_prefix(self):
+        """Format CAPY TOWN LOGS có emoji trước mỗi field — parser phải bỏ qua emoji"""
+        text = (
+            "CAPY TOWN LOGS\n"
+            "👤 Tên: Báo Lê (Báo Lê Văm)\n"
+            "💬 Discord: @VT | Báo\n"
+            "🕒 Tổng thời gian: 16 Phút\n"
+            "🟢 Bắt đầu: 31/05/2026 16:44:19\n"
+            "🔴 Kết thúc: 31/05/2026 17:01:08\n"
+            "❓ Lý do rời: [txAdmin] Server restarting (admin request)."
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.username == "Báo Lê (Báo Lê Văm)"
+        assert r.duration_minutes == 16
+        assert r.discord_handle == "@VT | Báo"
+        assert r.exit_reason and "txAdmin" in r.exit_reason
+
+    def test_v2_duration_seconds_short_log(self):
+        """Log siêu ngắn (39 giây) → round up = 1 phút, không phải 2340"""
+        text = (
+            "CAPY TOWN LOGS\n"
+            "Tên: Test User\n"
+            "Tổng thời gian: 39 Giây\n"
+            "Bắt đầu: 31/05/2026 12:10:13\n"
+            "Kết thúc: 31/05/2026 12:10:52"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 1   # NOT 39, NOT 2340
+
+    def test_v2_duration_combined_hms(self):
+        """Hỗ trợ '1 Giờ 5 Phút 30 Giây' = 66 phút (làm tròn từ 3930s)"""
+        text = (
+            "Tên: Test\n"
+            "Tổng thời gian: 1 Giờ 5 Phút 30 Giây\n"
+            "Bắt đầu: 31/05/2026 10:00:00\n"
+            "Kết thúc: 31/05/2026 11:05:30"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 66
+
+    def test_v2_duration_only_hours(self):
+        """'1 Giờ' không có phút/giây — phải parse được"""
+        text = (
+            "Tên: Test\n"
+            "Tổng thời gian: 1 Giờ\n"
+            "Bắt đầu: 31/05/2026 10:00:00\n"
+            "Kết thúc: 31/05/2026 11:00:00"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 60
+
     def test_v2_ocr_wrong_diacritics(self):
         """OCR đôi khi ĐOÁN SAI dấu — vẫn phải parse được"""
         wrong = (
