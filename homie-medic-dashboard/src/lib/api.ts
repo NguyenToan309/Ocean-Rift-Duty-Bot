@@ -1112,7 +1112,6 @@ export const api = {
       user_id: string;
       username: string;
       position: string;
-      department?: string;
       joined_at?: string;
       note: string;
     },
@@ -1128,7 +1127,6 @@ export const api = {
     user_id: string,
     body: {
       position?: string;
-      department?: string | null;
       username?: string;
       is_active?: boolean;
       joined_at?: string | null;

@@ -248,11 +248,6 @@ function StaffCard({ member, canEdit, onEdit }: { member: StaffMember; canEdit: 
             >
               {member.position_label}
             </Badge>
-            {member.department && (
-              <Badge variant="outline" className="text-[10px]">
-                {member.department}
-              </Badge>
-            )}
             {!member.is_active && (
               <Badge variant="secondary" className="text-[10px]">Đã nghỉ</Badge>
             )}
@@ -294,7 +289,6 @@ function StaffEditModal({
     user_id: staff?.user_id || '',
     username: staff?.username || '',
     position: staff?.position || 'BAC_SI',
-    department: staff?.department || '',
     joined_at: staff?.joined_at?.split('T')[0] || '',
     note: '',
   });
@@ -325,14 +319,12 @@ function StaffEditModal({
           user_id: form.user_id,
           username: form.username.trim(),
           position: form.position,
-          department: form.department.trim() || undefined,
           joined_at: form.joined_at || undefined,
           note: form.note.trim(),
         });
       } else {
         await api.staffUpdate(guildId, staff!.user_id, {
           position: form.position,
-          department: form.department.trim() || null,
           joined_at: form.joined_at || null,
           note: form.note.trim(),
         });
@@ -437,16 +429,6 @@ function StaffEditModal({
                 <option value="THUC_TAP_SINH">🎓 Thực Tập Sinh</option>
               </optgroup>
             </NativeSelect>
-          </div>
-
-          <div>
-            <Label>Khoa / Phòng ban</Label>
-            <Input
-              placeholder="VD: Khoa Nội, Khoa Cấp cứu"
-              value={form.department}
-              onChange={e => setForm({ ...form, department: e.target.value })}
-              className="mt-1"
-            />
           </div>
 
           <div>
