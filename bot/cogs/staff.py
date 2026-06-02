@@ -32,24 +32,9 @@ from bot.utils.embed_builder import (
     build_success_embed, build_error_embed, build_info_embed,
 )
 from bot.utils.time_utils import utcnow
-from web.utils.discord_role_sync import sync_staff_position_role
-
-
-def _format_sync_result(r: dict | None) -> str:
-    """Format kết quả role sync để hiển thị trong embed."""
-    if not r:
-        return ""
-    parts = []
-    if r.get("added_role_id"):
-        parts.append(f"• ✅ Đã cấp role <@&{r['added_role_id']}>")
-    if r.get("removed_role_id"):
-        parts.append(f"• ⛔ Đã gỡ role <@&{r['removed_role_id']}>")
-    if r.get("skipped_reason"):
-        parts.append(f"• ⓘ {r['skipped_reason']}")
-    if r.get("errors"):
-        for err in r["errors"][:3]:
-            parts.append(f"• ⚠️ {err}")
-    return "\n".join(parts)
+# Note: sync_staff_position_role IMPORT đã bỏ — auto-sync role Discord
+# đã bị tắt theo yêu cầu user: /nhansu chỉ ghi vào DB, không động vào role.
+# Admin phải tự cấp/gỡ role Discord bằng tay nếu cần.
 
 logger = logging.getLogger(__name__)
 
@@ -304,28 +289,14 @@ class StaffCog(commands.Cog):
                 created_at=utcnow(),
             ))
 
-            # Auto-sync Discord role
-            sync_result = await sync_staff_position_role(
-                session=session,
-                guild_id=interaction.guild_id,
-                user_id=nguoi.id,
-                new_position=chucvu.value,
-                old_position=None,
-                actor_id=interaction.user.id,
-                actor_username=str(interaction.user),
-                reason=f"/nhansu add: {lydo.strip()}",
-            )
-
             await session.commit()
 
         meta = POSITION_METADATA[chucvu.value]
-        sync_text = _format_sync_result(sync_result)
         await interaction.followup.send(
             embed=build_success_embed(
                 f"Đã thêm **{nguoi.display_name}** vào danh sách:\n"
                 f"• Chức vụ: {meta['icon']} **{meta['label']}**\n"
                 f"• Lý do: _{lydo.strip()}_"
-                + (f"\n\n**Auto-sync role Discord:**\n{sync_text}" if sync_text else "")
             ),
             ephemeral=True,
         )
@@ -402,31 +373,17 @@ class StaffCog(commands.Cog):
                 created_at=utcnow(),
             ))
 
-            # Auto-sync Discord role nếu position đổi (hoặc lần đầu set)
-            old_pos_for_sync = before.get("position") if before else None
-            sync_result = None
-            if old_pos_for_sync != chucvu.value:
-                sync_result = await sync_staff_position_role(
-                    session=session,
-                    guild_id=interaction.guild_id,
-                    user_id=nguoi.id,
-                    new_position=chucvu.value,
-                    old_position=old_pos_for_sync,
-                    actor_id=interaction.user.id,
-                    actor_username=str(interaction.user),
-                    reason=f"/nhansu set: {lydo.strip()}",
-                )
+            # Note: auto-sync Discord role đã BỎ theo yêu cầu user — /nhansu chỉ
+            # ghi DB, role Discord admin tự cấp/gỡ bằng tay nếu cần.
 
             await session.commit()
 
         meta = POSITION_METADATA[chucvu.value]
-        sync_text = _format_sync_result(sync_result)
         await interaction.followup.send(
             embed=build_success_embed(
                 f"Đã cập nhật **{nguoi.display_name}**:\n"
                 f"• Chức vụ: {meta['icon']} **{meta['label']}**\n"
                 f"• Lý do: _{lydo.strip()}_"
-                + (f"\n\n**Auto-sync role Discord:**\n{sync_text}" if sync_text else "")
             ),
             ephemeral=True,
         )
@@ -476,7 +433,6 @@ class StaffCog(commands.Cog):
                 "department": m.department,
                 "username": m.username,
             }
-            old_position_for_sync = m.position
             m.is_active = False
 
             session.add(AuditLog(
@@ -494,27 +450,15 @@ class StaffCog(commands.Cog):
                 created_at=utcnow(),
             ))
 
-            # Auto-gỡ role Discord
-            sync_result = await sync_staff_position_role(
-                session=session,
-                guild_id=interaction.guild_id,
-                user_id=nguoi.id,
-                new_position=None,
-                old_position=old_position_for_sync,
-                actor_id=interaction.user.id,
-                actor_username=str(interaction.user),
-                reason=f"/nhansu remove: {lydo.strip()}",
-            )
+            # Note: auto-gỡ Discord role đã BỎ — admin tự gỡ tay nếu cần.
 
             await session.commit()
 
-        sync_text = _format_sync_result(sync_result)
         await interaction.followup.send(
             embed=build_success_embed(
                 f"Đã gỡ **{nguoi.display_name}** khỏi danh sách hoạt động.\n"
                 f"_(Vẫn giữ lịch sử trong audit log)_\n"
                 f"• Lý do: _{lydo.strip()}_"
-                + (f"\n\n**Auto-sync role Discord:**\n{sync_text}" if sync_text else "")
             ),
             ephemeral=True,
         )
