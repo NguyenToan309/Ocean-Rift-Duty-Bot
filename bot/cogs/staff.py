@@ -72,9 +72,8 @@ def _format_staff_line(m: StaffMember) -> str:
     meta = POSITION_METADATA.get(m.position, {})
     icon = meta.get("icon", "•")
     label = meta.get("label", m.position)
-    dept = f" · {m.department}" if m.department else ""
     inactive = " *(đã nghỉ)*" if not m.is_active else ""
-    return f"{icon} **{m.username}** — {label}{dept}{inactive}"
+    return f"{icon} **{m.username}** — {label}{inactive}"
 
 
 class StaffCog(commands.Cog):
@@ -199,11 +198,6 @@ class StaffCog(commands.Cog):
             embed.set_thumbnail(url=nguoi.display_avatar.url)
         embed.add_field(name="Discord ID", value=f"`{m.user_id}`", inline=True)
         embed.add_field(
-            name="Khoa/Phòng ban",
-            value=m.department or "*(chưa cập nhật)*",
-            inline=True,
-        )
-        embed.add_field(
             name="Trạng thái",
             value="🟢 Đang hoạt động" if m.is_active else "⚪ Đã nghỉ",
             inline=True,
@@ -225,7 +219,6 @@ class StaffCog(commands.Cog):
     @app_commands.describe(
         nguoi="Nhân sự cần thêm",
         chucvu="Chức vụ",
-        khoa="Khoa/Phòng ban (optional)",
         ngay_vao_lam="Ngày vào làm — định dạng DD/MM/YYYY (optional)",
         lydo="Lý do thêm (BẮT BUỘC ≥3 ký tự)",
     )
@@ -236,7 +229,6 @@ class StaffCog(commands.Cog):
         nguoi: discord.Member,
         chucvu: app_commands.Choice[str],
         lydo: str,
-        khoa: str | None = None,
         ngay_vao_lam: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
@@ -291,7 +283,6 @@ class StaffCog(commands.Cog):
                 user_id=nguoi.id,
                 username=nguoi.display_name,
                 position=chucvu.value,
-                department=(khoa or "").strip() or None,
                 joined_at=joined_at_dt,
                 is_active=True,
             )
@@ -306,7 +297,6 @@ class StaffCog(commands.Cog):
                     "staff_user_id": str(nguoi.id),
                     "staff_username": nguoi.display_name,
                     "position": chucvu.value,
-                    "department": khoa,
                     "joined_at": joined_at_dt.isoformat() if joined_at_dt else None,
                     "note": lydo.strip(),
                     "via": "discord",
@@ -334,7 +324,6 @@ class StaffCog(commands.Cog):
             embed=build_success_embed(
                 f"Đã thêm **{nguoi.display_name}** vào danh sách:\n"
                 f"• Chức vụ: {meta['icon']} **{meta['label']}**\n"
-                f"• Khoa: {khoa or '*(chưa có)*'}\n"
                 f"• Lý do: _{lydo.strip()}_"
                 + (f"\n\n**Auto-sync role Discord:**\n{sync_text}" if sync_text else "")
             ),
@@ -348,7 +337,6 @@ class StaffCog(commands.Cog):
         nguoi="Nhân sự cần đổi",
         chucvu="Chức vụ mới",
         lydo="Lý do đổi (BẮT BUỘC ≥3 ký tự)",
-        khoa="Khoa/Phòng ban mới (optional)",
     )
     @app_commands.choices(chucvu=POSITION_CHOICES)
     async def set_cmd(
@@ -357,7 +345,6 @@ class StaffCog(commands.Cog):
         nguoi: discord.Member,
         chucvu: app_commands.Choice[str],
         lydo: str,
-        khoa: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -386,17 +373,14 @@ class StaffCog(commands.Cog):
                     user_id=nguoi.id,
                     username=nguoi.display_name,
                     position=chucvu.value,
-                    department=(khoa or "").strip() or None,
                     is_active=True,
                 )
                 session.add(m)
                 action = AuditAction.STAFF_ADDED
                 before = None
             else:
-                before = {"position": m.position, "department": m.department}
+                before = {"position": m.position}
                 m.position = chucvu.value
-                if khoa is not None:
-                    m.department = (khoa or "").strip() or None
                 m.username = nguoi.display_name  # Sync display name
                 action = AuditAction.STAFF_UPDATED
 
@@ -410,10 +394,8 @@ class StaffCog(commands.Cog):
                     "staff_username": nguoi.display_name,
                     "changes": {
                         "position": {"before": before.get("position") if before else None, "after": chucvu.value},
-                        "department": {"before": before.get("department") if before else None, "after": m.department},
                     } if before else None,
                     "position": chucvu.value,
-                    "department": m.department,
                     "note": lydo.strip(),
                     "via": "discord",
                 },
@@ -443,7 +425,6 @@ class StaffCog(commands.Cog):
             embed=build_success_embed(
                 f"Đã cập nhật **{nguoi.display_name}**:\n"
                 f"• Chức vụ: {meta['icon']} **{meta['label']}**\n"
-                f"• Khoa: {m.department or '*(chưa có)*'}\n"
                 f"• Lý do: _{lydo.strip()}_"
                 + (f"\n\n**Auto-sync role Discord:**\n{sync_text}" if sync_text else "")
             ),

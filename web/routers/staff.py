@@ -223,10 +223,12 @@ async def add_staff(
         "user_id": "1119880453671899196",  (string để tránh BigInt JS)
         "username": "BS. Nguyễn Văn A",
         "position": "BAC_SI",
-        "department": "Khoa Nội",       (optional)
         "joined_at": "2024-01-15",      (optional ISO date)
         "note": "Thêm nhân sự mới"      (BẮT BUỘC ≥3 chars)
       }
+
+    Field `department` trong body bị BỎ QUA (deprecated — bỏ khỏi UI).
+    Column DB giữ lại để bảo toàn dữ liệu cũ.
     """
     await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
     note = _require_note(body, "thêm nhân sự")
@@ -249,10 +251,7 @@ async def add_staff(
             detail=f"Chức vụ không hợp lệ: {position}. Hợp lệ: {StaffPosition.ALL}",
         )
 
-    department = (body.get("department") or "").strip() or None
-    if department and len(department) > 100:
-        department = department[:100]
-
+    # department deprecated — ignore body field, column DB không set khi tạo mới
     joined_at = None
     if body.get("joined_at"):
         try:
@@ -277,7 +276,6 @@ async def add_staff(
         user_id=user_id,
         username=username,
         position=position,
-        department=department,
         joined_at=joined_at,
         is_active=True,
     )
@@ -293,7 +291,6 @@ async def add_staff(
             "staff_user_id": str(user_id),
             "staff_username": username,
             "position": position,
-            "department": department,
             "note": note,
             "via": "web",
         },
@@ -342,15 +339,16 @@ async def update_staff(
     current_user: dict = Depends(require_auth),
 ):
     """
-    Cập nhật chức vụ/khoa/note của 1 nhân sự (Admin). Body:
+    Cập nhật chức vụ/note của 1 nhân sự (Admin). Body:
       {
         "position": "VIEN_TRUONG",      (optional, nếu đổi)
-        "department": "Khoa Cấp cứu",   (optional)
         "username": "...",              (optional, sync từ Discord)
         "is_active": true,              (optional)
         "joined_at": "2024-01-15",      (optional)
         "note": "Bổ nhiệm chức vụ mới"  (BẮT BUỘC ≥3 chars)
       }
+
+    Field `department` trong body bị BỎ QUA (deprecated — bỏ khỏi UI).
     """
     await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
     note = _require_note(body, "cập nhật nhân sự")
@@ -367,7 +365,6 @@ async def update_staff(
     # Lưu state cũ cho audit
     before = {
         "position": m.position,
-        "department": m.department,
         "username": m.username,
         "is_active": m.is_active,
     }
@@ -381,11 +378,7 @@ async def update_staff(
             )
         m.position = new_pos
 
-    if "department" in body:
-        dept = (body["department"] or "").strip() or None
-        if dept and len(dept) > 100:
-            dept = dept[:100]
-        m.department = dept
+    # department deprecated — body field bị bỏ qua, không update
 
     if "username" in body:
         uname = (body["username"] or "").strip()
@@ -408,7 +401,6 @@ async def update_staff(
 
     after = {
         "position": m.position,
-        "department": m.department,
         "username": m.username,
         "is_active": m.is_active,
     }
