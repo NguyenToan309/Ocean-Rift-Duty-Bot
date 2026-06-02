@@ -10,7 +10,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -127,27 +126,23 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
-# ----- Static files & Templates -----
-_static_dir = os.path.join(os.path.dirname(__file__), "static")
-_template_dir = os.path.join(os.path.dirname(__file__), "templates")
+# ----- Static files (React SPA build) -----
 # React build output (homie-medic-dashboard/dist) — sinh ra bởi `npm run build`.
+# Web KHÔNG còn fallback Jinja templates — phải build React trước khi chạy.
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _react_dist = os.path.join(_project_root, "homie-medic-dashboard", "dist")
 _react_available = os.path.isdir(_react_dist) and os.path.isfile(os.path.join(_react_dist, "index.html"))
 
-if os.path.isdir(_static_dir):
-    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
-
-# Mount asset chunks của React (Vite mặc định bỏ trong /assets/)
 if _react_available:
     _react_assets = os.path.join(_react_dist, "assets")
     if os.path.isdir(_react_assets):
         app.mount("/assets", StaticFiles(directory=_react_assets), name="react_assets")
     logger.info(f"[REACT] Serving SPA from {_react_dist}")
 else:
-    logger.info("[REACT] dist/ chưa build — fallback Jinja templates. Chạy `npm run build` trong homie-medic-dashboard/ để bật SPA.")
-
-templates = Jinja2Templates(directory=_template_dir)
+    logger.error(
+        "[REACT] dist/ KHÔNG TỒN TẠI. Chạy `cd homie-medic-dashboard && npm run build` "
+        "trước khi start web. Mọi request sẽ trả 500 cho đến khi build."
+    )
 
 # ----- Routers -----
 app.include_router(auth.router)
@@ -185,6 +180,12 @@ async def index(request: Request):
     Nếu cookie expired, sai type, hoặc đã bị revoke (jti blacklist) → xoá cookie
     rồi serve index để user thấy login.
     """
+    if not _react_available:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Web chưa được build. Liên hệ admin."},
+        )
+
     token = request.cookies.get("access_token")
     invalid_token = False
     if token and not request.query_params.get("require_2fa"):
@@ -200,10 +201,7 @@ async def index(request: Request):
         except Exception:
             invalid_token = True
 
-    if _react_available:
-        response = _serve_react_index(request)
-    else:
-        response = templates.TemplateResponse("index.html", {"request": request})
+    response = _serve_react_index(request)
 
     if invalid_token:
         response.delete_cookie("access_token")
@@ -214,9 +212,12 @@ async def index(request: Request):
 
 @app.get("/dashboard")
 async def dashboard_page(request: Request):
-    if _react_available:
-        return _serve_react_index(request)
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    if not _react_available:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Web chưa được build. Liên hệ admin."},
+        )
+    return _serve_react_index(request)
 
 
 # ----- Health check (không yêu cầu auth) -----
@@ -250,7 +251,10 @@ async def spa_catch_all(full_path: str, request: Request):
 
     if _react_available:
         return _serve_react_index(request)
-    return templates.TemplateResponse("index.html", {"request": request})
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Web chưa được build. Liên hệ admin."},
+    )
 
 
 # ----- Global error handler -----
