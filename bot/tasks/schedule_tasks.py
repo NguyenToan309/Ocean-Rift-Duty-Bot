@@ -767,11 +767,12 @@ async def backfill_scan_guild(
             if not parsed:
                 continue
 
-            # Verify name khớp author
-            status, matches = _resolve_name_owner(guild, parsed.username)
-            if status != "ok" or matches[0].id != msg.author.id:
-                stats["no_match"] += 1
-                continue
+            # Pre-check display_name match cũ ĐÃ BỎ — binding logic trong
+            # _save_duty_log (Tầng -1) tự xử lý chống impersonation chính xác
+            # qua discord_user_id. Tên ingame (vd "Báo Lê (CP890743)") không
+            # cần khớp Discord display_name (vd "BS | Nyta Suy") nữa.
+            # Nếu binding reject (S3/S4), exception sẽ bị bắt ở except dưới
+            # và stats["no_match"] tăng (giữ semantic).
 
             # Save
             async with AsyncSessionLocal() as save_session:
@@ -788,6 +789,8 @@ async def backfill_scan_guild(
                         source="backfill",
                         source_message_id=msg.id,
                         submitted_by=msg.author.id,
+                        discord_handle=parsed.discord_handle,
+                        exit_reason=parsed.exit_reason,
                     )
                     save_session.add(AuditLog(
                         guild_id=guild.id,
@@ -813,11 +816,23 @@ async def backfill_scan_guild(
                         await msg.add_reaction("✅")
                     except discord.HTTPException:
                         pass  # Mất quyền add_reaction không nên fail backfill
+                except ValueError as e:
+                    await save_session.rollback()
+                    # Phân loại lý do reject theo nội dung message để stats
+                    # phản ánh đúng (dup vs no_match vs invalid).
+                    err = str(e).lower()
+                    if "đã được lưu" in err or "duplicate" in err:
+                        stats["dup"] += 1
+                    elif "không khớp" in err or "thuộc về tài khoản" in err:
+                        stats["no_match"] += 1
+                    else:
+                        # Future/overlap/v.v. — invalid
+                        stats["invalid"] += 1
+                    logger.debug(f"[backfill] Skip msg {msg.id}: {e}")
                 except Exception as e:
                     await save_session.rollback()
-                    # Lỗi save thường do duplicate Layer 2 (cùng user + thời gian)
-                    logger.debug(f"[backfill] Save skip msg {msg.id}: {e}")
-                    stats["dup"] += 1
+                    logger.warning(f"[backfill] Save error msg {msg.id}: {type(e).__name__}: {e}")
+                    stats["invalid"] += 1
     except discord.Forbidden:
         return {**stats, "error": "no_permission_read_history"}
     except discord.HTTPException as e:
