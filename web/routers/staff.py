@@ -30,7 +30,8 @@ from models.guild import GuildConfig
 from models.audit_log import AuditLog, AuditAction
 from web.middleware.auth_guard import require_auth, require_guild_role
 from web.middleware.rate_limit import limiter
-from web.utils.discord_role_sync import sync_staff_position_role
+# Note: sync_staff_position_role IMPORT đã bỏ — auto-sync role Discord
+# đã bị tắt theo yêu cầu user. Endpoint chỉ ghi DB, admin tự cấp/gỡ role.
 from bot.utils.time_utils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -297,18 +298,7 @@ async def add_staff(
         created_at=utcnow(),
     ))
 
-    # Auto-sync Discord role theo position_role_map
-    sync_result = await sync_staff_position_role(
-        session=session,
-        guild_id=guild_id,
-        user_id=user_id,
-        new_position=position,
-        old_position=None,
-        actor_id=int(current_user["sub"]),
-        actor_username=current_user.get("username"),
-        reason=f"Thêm nhân sự: {note}",
-    )
-
+    # Note: auto-sync Discord role đã BỎ — admin tự cấp role tay nếu cần.
     await session.commit()
     await session.refresh(member)
 
@@ -323,7 +313,7 @@ async def add_staff(
     except Exception as e:
         logger.warning(f"Realtime publish failed: {e}")
 
-    return {"success": True, "staff": _serialize(member), "role_sync": sync_result}
+    return {"success": True, "staff": _serialize(member), "role_sync": None}
 
 
 # ─── PUT /{user_id} ───────────────────────────────────────────────────────────
@@ -423,20 +413,7 @@ async def update_staff(
         created_at=utcnow(),
     ))
 
-    # Auto-sync Discord role nếu chức vụ thay đổi
-    sync_result = None
-    if "position" in changes:
-        sync_result = await sync_staff_position_role(
-            session=session,
-            guild_id=guild_id,
-            user_id=m.user_id,
-            new_position=after["position"],
-            old_position=before["position"],
-            actor_id=int(current_user["sub"]),
-            actor_username=current_user.get("username"),
-            reason=f"Đổi chức vụ {before['position']} → {after['position']}: {note}",
-        )
-
+    # Note: auto-sync Discord role đã BỎ — admin tự cấp/đổi role tay nếu cần.
     await session.commit()
     await session.refresh(m)
 
@@ -454,7 +431,7 @@ async def update_staff(
         "success": True,
         "staff": _serialize(m),
         "changes": changes,
-        "role_sync": sync_result,
+        "role_sync": None,
     }
 
 
@@ -501,7 +478,6 @@ async def remove_staff(
         "hard_delete": hard,
     }
 
-    old_position_for_sync = m.position
     if hard:
         await session.delete(m)
     else:
@@ -521,18 +497,7 @@ async def remove_staff(
         created_at=utcnow(),
     ))
 
-    # Auto-gỡ role Discord khi gỡ nhân sự
-    sync_result = await sync_staff_position_role(
-        session=session,
-        guild_id=guild_id,
-        user_id=user_id_target,
-        new_position=None,    # Không cấp role mới
-        old_position=old_position_for_sync,
-        actor_id=int(current_user["sub"]),
-        actor_username=current_user.get("username"),
-        reason=f"Gỡ nhân sự: {note_clean}",
-    )
-
+    # Note: auto-gỡ Discord role đã BỎ — admin tự gỡ tay nếu cần.
     await session.commit()
 
     try:
@@ -548,7 +513,7 @@ async def remove_staff(
         "success": True,
         "user_id": str(user_id_target),
         "hard_delete": hard,
-        "role_sync": sync_result,
+        "role_sync": None,
     }
 
 
