@@ -16,6 +16,7 @@ from models.staff_member import (
 )
 from models.system_setting import SystemSetting, DEFAULTS as SYSTEM_DEFAULTS, ALLOWED_KEYS as SYSTEM_ALLOWED_KEYS, MAX_VALUE_LENGTH as SYSTEM_MAX_LENGTH
 from models.duty_identity_binding import DutyIdentityBinding
+from models.panel_subscription import PanelSubscription, PANEL_TYPES
 
 __all__ = [
     "Base",
@@ -45,4 +46,6 @@ __all__ = [
     "SYSTEM_ALLOWED_KEYS",
     "SYSTEM_MAX_LENGTH",
     "DutyIdentityBinding",
+    "PanelSubscription",
+    "PANEL_TYPES",
 ]

@@ -17,8 +17,8 @@ from bot.utils.time_utils import utcnow
 # Default values dùng khi bảng rỗng (chưa migrate hoặc seed fail).
 # Bot và web sẽ fallback các giá trị này để không crash.
 DEFAULTS: dict[str, str] = {
-    "system_name": "Homie Medic",
-    "bot_activity_text": "Homie Medic | /log upload",
+    "system_name": "MedicLog",
+    "bot_activity_text": "MedicLog · Bệnh viện",
 }
 
 
