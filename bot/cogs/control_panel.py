@@ -12,6 +12,7 @@ Mỗi command có param `pin: True` cho admin pin panel vào channel cố địn
 """
 from __future__ import annotations
 import logging
+from datetime import datetime, timedelta
 
 import discord
 from discord import app_commands, ui
@@ -62,9 +63,38 @@ def _stat_chip(emoji: str, label: str, value: str) -> str:
 # 1. OVERVIEW PANEL
 # ============================================================
 
+def _format_period_short(period: str, start: datetime, end: datetime, tz_str: str) -> str:
+    """Format khoảng ngày short cho header. VD: '25/05 → 31/05'."""
+    import pytz
+    try:
+        tz = pytz.timezone(tz_str or "Asia/Ho_Chi_Minh")
+        s_local = start.astimezone(tz)
+        e_local = end.astimezone(tz)
+        return f"{s_local.strftime('%d/%m')} → {e_local.strftime('%d/%m')}"
+    except Exception:
+        return get_period_label(period)
+
+
+async def _get_brand_name() -> str:
+    """Lấy brand name (system_name setting) từ DB, fallback 'MedicLog'."""
+    try:
+        from models.system_setting import SystemSetting, DEFAULTS as SYS_DEFAULTS
+        async with AsyncSessionLocal() as session:
+            row = await session.execute(
+                select(SystemSetting).where(SystemSetting.key == "system_name")
+            )
+            s = row.scalar_one_or_none()
+            if s and s.value:
+                return s.value
+    except Exception:
+        pass
+    return "MedicLog"
+
+
 async def build_overview_embed(guild: discord.Guild, user: discord.User | discord.Member, period: str) -> discord.Embed:
     tz = await _fetch_guild_tz(guild.id)
     start, end = get_period_range(period, tz_str=tz)
+    brand = await _get_brand_name()
 
     async with AsyncSessionLocal() as session:
         totals = (await session.execute(
@@ -87,13 +117,26 @@ async def build_overview_embed(guild: discord.Guild, user: discord.User | discor
             .where(MemberSchedule.guild_id == guild.id)
             .where(MemberSchedule.is_active == True)  # noqa: E712
         )).scalar() or 0
+        # Top 5 user theo tổng giờ tuần này
+        top_rows = (await session.execute(
+            select(
+                DutyLog.user_id,
+                DutyLog.username,
+                func.sum(DutyLog.duration_minutes).label("minutes"),
+                func.count(DutyLog.id).label("sessions"),
+            )
+            .where(DutyLog.guild_id == guild.id)
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+            .group_by(DutyLog.user_id, DutyLog.username)
+            .order_by(func.sum(DutyLog.duration_minutes).desc())
+            .limit(5)
+        )).all()
 
+    period_str = _format_period_short(period, start, end, tz)
     embed = discord.Embed(
-        title=f"🏥  HOMIE MEDIC  ·  Tổng quan {get_period_label(period).lower()}",
-        description=(
-            f"Xin chào **{user.display_name}** 👋\n"
-            f"-# 📊 Thống kê toàn server tại thời điểm hiện tại"
-        ),
+        title=f"🏥  {brand}  ·  Tổng quan {get_period_label(period).lower()}",
+        description=f"📊 Thống kê bệnh viện · *{period_str}*",
         color=COLOR_BRAND,
         timestamp=utcnow(),
     )
@@ -103,30 +146,49 @@ async def build_overview_embed(guild: discord.Guild, user: discord.User | discor
     # 3-column stat row
     embed.add_field(
         name="⏱️  Tổng giờ trực",
-        value=f"```{minutes_to_hhmm(totals.minutes or 0)}```{totals.sessions or 0} ca trong kỳ",
+        value=f"```{minutes_to_hhmm(totals.minutes or 0)}```{totals.sessions or 0} ca / kỳ",
         inline=True,
     )
     embed.add_field(
-        name="👥  Nhân sự active",
-        value=f"```{totals.active or 0} người```Đã chấm công",
+        name="👥  Người trực",
+        value=f"```{totals.active or 0} người```đã chấm công",
         inline=True,
     )
     embed.add_field(
         name="📋  Lịch trực",
-        value=f"```{total_schedules} ca```Đã đăng ký",
+        value=f"```{total_schedules} ca```đã đăng ký",
         inline=True,
     )
 
+    # Top 5 bảng xếp hạng — code block monospace cho alignment đẹp
+    if top_rows:
+        medals = ["🥇", "🥈", "🥉", " 4", " 5"]
+        lines = ["```",
+                 "  #   Nhân viên              Giờ trực   Ca",
+                 " ─── ────────────────────── ─────────  ────"]
+        for i, r in enumerate(top_rows):
+            medal = medals[i] if i < len(medals) else f" {i+1}"
+            name = (r.username or "—")[:22].ljust(22)
+            hhmm = minutes_to_hhmm(r.minutes or 0).rjust(9)
+            sess = str(r.sessions or 0).rjust(3)
+            lines.append(f"  {medal}  {name} {hhmm}   {sess}")
+        lines.append("```")
+        embed.add_field(
+            name="🏆  Top 5 nhân viên",
+            value="\n".join(lines),
+            inline=False,
+        )
+
     embed.add_field(
-        name="📝  Đơn nghỉ chờ duyệt",
+        name="📝  Đơn xin nghỉ đang chờ",
         value=(
-            f"🔴 **{pending}** đơn đang chờ xử lý"
+            f"🔴 **{pending}** đơn đang chờ duyệt"
             if pending > 0 else "✅ Không có đơn nào"
         ),
         inline=False,
     )
 
-    embed.set_footer(text=f"⚡ Đổi khoảng thời gian bằng dropdown bên dưới")
+    embed.set_footer(text=f"🔄 Tự cập nhật mỗi 5 phút · Đổi khoảng thời gian bằng dropdown bên dưới")
     return embed
 
 
@@ -239,88 +301,96 @@ class OverviewPanelView(ui.View):
 # 2. DUTY PANEL
 # ============================================================
 
+def _relative_ago(dt: datetime | None, now: datetime | None = None) -> str:
+    """Format datetime → 'X giờ trước' / 'X ngày trước'. None → 'chưa có'."""
+    if dt is None:
+        return "chưa có"
+    now = now or utcnow()
+    if dt.tzinfo is None:
+        # Naive — assume UTC
+        import pytz
+        dt = pytz.utc.localize(dt)
+    diff = now - dt
+    sec = int(diff.total_seconds())
+    if sec < 60:
+        return "vừa xong"
+    if sec < 3600:
+        return f"{sec // 60}p trước"
+    if sec < 86400:
+        return f"{sec // 3600}g trước"
+    return f"{sec // 86400}d trước"
+
+
 async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Member) -> discord.Embed:
-    """Embed cá nhân hoá: ưu tiên stats của user, kèm setup channel + quick hint upload."""
+    """Public panel: hướng dẫn chấm công + bảng xếp hạng top 10 nhân viên tuần này."""
     tz = await _fetch_guild_tz(guild.id)
     week_start, week_end = get_period_range("week", tz_str=tz)
-    day_start, day_end = get_period_range("day", tz_str=tz)
+    brand = await _get_brand_name()
 
     async with AsyncSessionLocal() as session:
-        # Stats CÁ NHÂN
-        my_week = (await session.execute(
+        # Top 10 toàn server (group by user)
+        top_rows = (await session.execute(
             select(
-                func.count(DutyLog.id).label("c"),
-                func.coalesce(func.sum(DutyLog.duration_minutes), 0).label("m"),
+                DutyLog.user_id,
+                DutyLog.username,
+                func.sum(DutyLog.duration_minutes).label("minutes"),
+                func.count(DutyLog.id).label("sessions"),
                 func.max(DutyLog.started_at).label("last"),
             )
             .where(DutyLog.guild_id == guild.id)
-            .where(DutyLog.user_id == user.id)
             .where(DutyLog.started_at >= week_start)
             .where(DutyLog.started_at <= week_end)
-        )).one()
-        my_today = (await session.execute(
-            select(
-                func.count(DutyLog.id).label("c"),
-                func.coalesce(func.sum(DutyLog.duration_minutes), 0).label("m"),
-            )
-            .where(DutyLog.guild_id == guild.id)
-            .where(DutyLog.user_id == user.id)
-            .where(DutyLog.started_at >= day_start)
-            .where(DutyLog.started_at <= day_end)
-        )).one()
+            .group_by(DutyLog.user_id, DutyLog.username)
+            .order_by(func.sum(DutyLog.duration_minutes).desc())
+            .limit(10)
+        )).all()
         # Channel chấm công đã setup
         cfg = (await session.execute(
             select(GuildConfig).where(GuildConfig.guild_id == guild.id)
         )).scalar_one_or_none()
-        # Channel chấm công gọi là `log_channel_id` trong GuildConfig
         duty_channel_id = getattr(cfg, "log_channel_id", None) if cfg else None
 
-    channel_mention = f"<#{duty_channel_id}>" if duty_channel_id else "*chưa setup* — dùng `/setup channel`"
+    channel_mention = f"<#{duty_channel_id}>" if duty_channel_id else "*chưa setup*"
 
     embed = discord.Embed(
-        title="✍️  Bảng chấm công",
+        title=f"✍️  Bảng chấm công {brand}",
         description=(
-            f"Xin chào **{user.display_name}** 👋\n"
-            f"📍 Channel chấm công: {channel_mention}\n"
-            f"-# *Forward hoặc screenshot tin nhắn LOG DUTY vào channel — bot tự xử lý.*"
+            f"📍 Kênh chấm công: {channel_mention}\n\n"
+            f"**🚀 Cách chấm công**\n"
+            f"**1.** Gửi tin LOG DUTY từ game vào kênh chấm công\n"
+            f"**2.** Hoặc chụp ảnh LOG DUTY rồi gửi ảnh\n"
+            f"Bot tự nhận và phản hồi xác nhận. Nếu sai định dạng/trùng giờ/sai tên → bot báo cụ thể."
         ),
         color=COLOR_DUTY, timestamp=utcnow(),
     )
-    embed.set_thumbnail(url=user.display_avatar.url)
 
-    # ── Stats cá nhân ──
-    embed.add_field(
-        name="📅  Hôm nay",
-        value=f"```{minutes_to_hhmm(my_today.m or 0)}```{my_today.c or 0} ca",
-        inline=True,
-    )
-    embed.add_field(
-        name="📆  Tuần này",
-        value=f"```{minutes_to_hhmm(my_week.m or 0)}```{my_week.c or 0} ca",
-        inline=True,
-    )
-    embed.add_field(
-        name="🕐  Lần cuối chấm",
-        value=(
-            f"<t:{int(my_week.last.timestamp())}:R>"
-            if my_week.last else "*Chưa có log*"
-        ),
-        inline=True,
-    )
+    # ── Bảng xếp hạng tuần này — REAL DATA top 10 ──
+    if top_rows:
+        medals = ["🥇", "🥈", "🥉"]
+        lines = ["```",
+                 "  #   Nhân viên              Giờ trực   Ca   Lần cuối",
+                 " ─── ────────────────────── ─────────  ────  ─────────"]
+        for i, r in enumerate(top_rows):
+            medal = medals[i] if i < 3 else f" {i+1}"
+            name = (r.username or "—")[:22].ljust(22)
+            hhmm = minutes_to_hhmm(r.minutes or 0).rjust(9)
+            sess = str(r.sessions or 0).rjust(3)
+            last = _relative_ago(r.last).rjust(9)
+            lines.append(f"  {medal}  {name} {hhmm}   {sess}  {last}")
+        lines.append("```")
+        embed.add_field(
+            name="🏆  Bảng xếp hạng tuần này",
+            value="\n".join(lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🏆  Bảng xếp hạng tuần này",
+            value="*Chưa có ai chấm công tuần này.*",
+            inline=False,
+        )
 
-    # ── 2 cách chấm công ──
-    embed.add_field(
-        name="🚀  Cách chấm công",
-        value=(
-            f"**1.** Forward tin nhắn LOG DUTY → {channel_mention}\n"
-            f"**2.** Hoặc gửi ảnh screenshot LOG DUTY → {channel_mention}\n\n"
-            f"Bot tự OCR/parse → reply embed *Đã ghi nhận ca trực* khi thành công.\n"
-            f"Nếu sai format/tên/trùng → bot báo lỗi cụ thể."
-        ),
-        inline=False,
-    )
-
-    embed.set_footer(text="🔒 Bot khớp tên với Discord ID — không thể chấm hộ người khác")
+    embed.set_footer(text="🔒 Bot chỉ nhận khi tài khoản gửi khớp tên trong log · 🔄 Cập nhật mỗi 5 phút")
     return embed
 
 
@@ -533,44 +603,75 @@ async def build_leave_embed(guild: discord.Guild, user: discord.User | discord.M
             .where(LeaveRequest.request_type == "leave")
         )).scalar() or 0
 
+    # Fetch pending leave requests (real data, max 10 mới nhất)
+    async with AsyncSessionLocal() as session:
+        pending_rows = (await session.execute(
+            select(LeaveRequest)
+            .where(LeaveRequest.guild_id == guild.id)
+            .where(LeaveRequest.status == LeaveRequestStatus.PENDING)
+            .where(LeaveRequest.request_type == "leave")
+            .order_by(LeaveRequest.created_at.desc())
+            .limit(10)
+        )).scalars().all()
+
     embed = discord.Embed(
         title="📤  Xin nghỉ phép",
         description=(
-            "Gửi đơn nghỉ ngắn hạn — staff vote duyệt.\n"
-            "-# *Bạn nhận DM kết quả ngay khi staff quyết định.*"
+            "Gửi đơn nghỉ ngắn hạn — ban quản lý xem xét và duyệt.\n"
+            "Bạn nhận tin nhắn riêng kết quả ngay khi có quyết định.\n\n"
+            "⏱️ **Thời hạn duyệt**: tối đa 24h kể từ lúc gửi"
         ),
         color=COLOR_LEAVE, timestamp=utcnow(),
     )
-    embed.add_field(
-        name="📋  Đơn của bạn",
-        value=(
-            f"⏳ Chờ duyệt: ` {my_pending} `\n"
-            f"✅ Đã duyệt: ` {my_approved} `"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="🗂️  Tổng server",
-        value=f"🔴 ` {server_pending} ` đơn đang chờ",
-        inline=True,
-    )
-    embed.add_field(
-        name="⏱️  Thời hạn duyệt",
-        value="Tối đa **24h**\nkể từ lúc gửi",
-        inline=True,
-    )
 
+    # ── Danh sách đơn đang chờ (real data) ──
+    if pending_rows:
+        lines = ["```",
+                 " #     Nhân viên          Ngày            Lý do",
+                 " ───── ───────────────── ─────────────── ─────────────────"]
+        for r in pending_rows:
+            id_s = f"#{r.id:03d}"[:5].ljust(5)
+            name = (r.username or "—")[:17].ljust(17)
+            if r.end_date and r.end_date != r.start_date:
+                day_s = f"{r.start_date.strftime('%d/%m')} → {r.end_date.strftime('%d/%m')}"
+            else:
+                day_s = r.start_date.strftime("%d/%m")
+            day_s = day_s.ljust(15)
+            reason = (r.reason or "")[:25]
+            lines.append(f" {id_s} {name} {day_s} {reason}")
+        lines.append("```")
+        embed.add_field(
+            name=f"📋  Đơn đang chờ duyệt ({len(pending_rows)})",
+            value="\n".join(lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📋  Đơn đang chờ duyệt",
+            value="✅ Không có đơn nào → bệnh viện đang êm xuôi",
+            inline=False,
+        )
+
+    # ── Thống kê đơn của user xem ──
     embed.add_field(
-        name="📝  Hướng dẫn",
+        name="📊  Đơn của bạn",
         value=(
-            "**1.** Click **Gửi đơn xin nghỉ** → mở form\n"
-            "**2.** Điền loại nghỉ + ngày + lý do\n"
-            "**3.** Staff vote — đa số duyệt = approved\n"
-            "**4.** Nếu approved: bot auto-note vào lịch + audit log"
+            f"⏳ Chờ duyệt: ` {my_pending} `   "
+            f"✅ Đã duyệt: ` {my_approved} `"
         ),
         inline=False,
     )
-    embed.set_footer(text="💡 Cần out hẳn khỏi ngành? Dùng /panel-resign")
+
+    embed.add_field(
+        name="📝  Cách gửi đơn",
+        value=(
+            "**1.** Bấm nút **Gửi đơn xin nghỉ** bên dưới\n"
+            "**2.** Điền loại nghỉ + ngày + lý do\n"
+            "**3.** Đợi ban quản lý xem xét"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="💡 Cần nghỉ hẳn? Dùng /panel-resign · 🔄 Cập nhật mỗi 5 phút")
     return embed
 
 
@@ -671,20 +772,57 @@ class ResignModal(ui.Modal, title="⚠️ Xin out ngành"):
         )
 
 
-async def build_resign_embed() -> discord.Embed:
+async def build_resign_embed(guild: discord.Guild | None = None) -> discord.Embed:
+    # Fetch pending resign requests (real data)
+    pending_rows = []
+    if guild is not None:
+        async with AsyncSessionLocal() as session:
+            pending_rows = (await session.execute(
+                select(LeaveRequest)
+                .where(LeaveRequest.guild_id == guild.id)
+                .where(LeaveRequest.status == LeaveRequestStatus.PENDING)
+                .where(LeaveRequest.request_type == "resign")
+                .order_by(LeaveRequest.created_at.desc())
+                .limit(10)
+            )).scalars().all()
+
     embed = discord.Embed(
-        title="⚠️  Xin out ngành",
+        title="⚠️  Xin nghỉ hẳn (nghỉ vĩnh viễn)",
         description=(
-            "**🚨 Quyết định nghiêm trọng** — đơn xin out sẽ:\n"
-            "🔴 Yêu cầu vote duyệt từ **nhiều staff** (1 admin không tự duyệt được)\n"
-            "🔴 Nếu duyệt: bot **tự gỡ role nhân viên** vào ngày đã chọn\n"
-            "🔴 Huỷ **mọi lịch trực** còn lại của bạn\n\n"
-            "-# 💡 *Chỉ muốn nghỉ ngắn hạn? Dùng `/panel-leave` thay vì panel này.*"
+            "**🚨 Quyết định nghiêm trọng** — đơn xin nghỉ hẳn sẽ:\n"
+            "🔴 Cần nhiều người trong ban quản lý đồng ý (1 admin không tự duyệt)\n"
+            "🔴 Khi duyệt: hệ thống tự gỡ vị trí nhân viên vào ngày đã chọn\n"
+            "🔴 Huỷ toàn bộ lịch trực còn lại của bạn\n\n"
+            "-# 💡 *Chỉ muốn nghỉ vài ngày? Dùng `/panel-leave` thay vì panel này.*"
         ),
         color=COLOR_RESIGN, timestamp=utcnow(),
     )
+
+    # ── Danh sách đơn đang chờ (real data) ──
+    if pending_rows:
+        lines = ["```",
+                 " #     Nhân viên          Ngày dự kiến",
+                 " ───── ───────────────── ──────────────"]
+        for r in pending_rows:
+            id_s = f"#{r.id:03d}"[:5].ljust(5)
+            name = (r.username or "—")[:17].ljust(17)
+            day_s = r.start_date.strftime("%d/%m/%Y")
+            lines.append(f" {id_s} {name} {day_s}")
+        lines.append("```")
+        embed.add_field(
+            name=f"📋  Đơn xin nghỉ hẳn đang chờ ({len(pending_rows)})",
+            value="\n".join(lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📋  Đơn xin nghỉ hẳn đang chờ",
+            value="✅ Không có đơn nào → đội ngũ đang ổn định",
+            inline=False,
+        )
+
     embed.add_field(
-        name="✅  Checklist trước khi gửi",
+        name="✅  Trước khi gửi đơn, hãy chắc chắn:",
         value=(
             "```diff\n"
             "+ Đã hoàn thành công việc đang dang dở\n"
@@ -695,7 +833,7 @@ async def build_resign_embed() -> discord.Embed:
         ),
         inline=False,
     )
-    embed.set_footer(text="🔒 Gõ chính xác 'XÁC NHẬN' trong form để xác nhận chủ ý")
+    embed.set_footer(text="🔒 Phải gõ chính xác 'XÁC NHẬN' trong form · 🔄 Cập nhật mỗi 5 phút")
     return embed
 
 
@@ -741,6 +879,9 @@ class ResignPanelView(ui.View):
 # ============================================================
 
 async def build_schedule_embed(guild: discord.Guild, user: discord.User | discord.Member) -> discord.Embed:
+    """Public panel: tóm tắt + bảng số người đăng ký theo từng thứ."""
+    weekday_labels = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
+
     async with AsyncSessionLocal() as session:
         my_count = (await session.execute(
             select(func.count(MemberSchedule.id))
@@ -759,15 +900,30 @@ async def build_schedule_embed(guild: discord.Guild, user: discord.User | discor
             .where(MemberSchedule.is_active == True)  # noqa: E712
         )).scalar() or 0
 
+        # Tất cả schedule active để build bảng theo thứ
+        all_scheds = (await session.execute(
+            select(MemberSchedule)
+            .where(MemberSchedule.guild_id == guild.id)
+            .where(MemberSchedule.is_active == True)  # noqa: E712
+        )).scalars().all()
+
+    # Group by weekday
+    by_day: dict[int, list] = {wd: [] for wd in range(7)}
+    for s in all_scheds:
+        if 0 <= s.weekday <= 6:
+            by_day[s.weekday].append(s)
+
     embed = discord.Embed(
         title="📅  Lịch trực hàng tuần",
         description=(
-            "Quản lý ca trực — bot **nhắc trước giờ vào ca** và tính độ tuân thủ "
-            "dựa trên log chấm công thực tế."
+            "Đăng ký ca làm việc — bot nhắc trước giờ vào ca, "
+            "theo dõi độ đúng giờ dựa trên chấm công thực tế.\n\n"
+            "🔔 Mặc định nhắc trước 60 phút, 30 phút, 5 phút"
         ),
         color=COLOR_SCHEDULE, timestamp=utcnow(),
     )
 
+    # 3-column summary
     embed.add_field(
         name="🗓️  Của bạn",
         value=f"```{my_count} ca/tuần```",
@@ -779,21 +935,47 @@ async def build_schedule_embed(guild: discord.Guild, user: discord.User | discor
         inline=True,
     )
     embed.add_field(
-        name="📋  Tổng server",
+        name="📋  Tổng ca/tuần",
         value=f"```{total_count} ca```",
         inline=True,
     )
 
+    # ── Bảng theo thứ (real data) ──
+    if all_scheds:
+        lines = ["```",
+                 " Thứ        Người  Khung giờ phổ biến",
+                 " ────────── ─────  ──────────────────────"]
+        for wd in range(7):
+            day_scheds = by_day[wd]
+            n_people = len(set(s.user_id for s in day_scheds))
+            # Top 2 khung giờ phổ biến nhất
+            from collections import Counter
+            slot_counts = Counter(
+                f"{s.start_time.strftime('%H:%M')}-{s.end_time.strftime('%H:%M')}"
+                for s in day_scheds
+            )
+            top_slots = ", ".join(slot for slot, _ in slot_counts.most_common(2))
+            if not top_slots:
+                top_slots = "—"
+            label = weekday_labels[wd].ljust(10)
+            lines.append(f" {label} {str(n_people).rjust(5)}  {top_slots[:22]}")
+        lines.append("```")
+        embed.add_field(
+            name="📅  Lịch trực theo thứ",
+            value="\n".join(lines),
+            inline=False,
+        )
+
     embed.add_field(
-        name="⚙️  Thao tác nhanh",
+        name="⚙️  Bạn có thể",
         value=(
-            "**📅 Lịch của tôi** — xem ca đã đăng ký theo thứ\n"
-            "**➕ Đăng ký ca mới** — hướng dẫn dùng `/dangky`\n"
-            "**📊 Báo cáo tuân thủ** — rate on-time / late / missed"
+            "**📅 Xem lịch của tôi** — ca đã đăng ký của riêng bạn\n"
+            "**➕ Đăng ký ca mới** — hướng dẫn dùng lệnh `/dangky`\n"
+            "**📊 Xem báo cáo** — tỉ lệ đi đúng giờ / muộn / vắng"
         ),
         inline=False,
     )
-    embed.set_footer(text="🔔 Mặc định nhắc 60/30/5 phút trước ca — đổi qua /lich nhac")
+    embed.set_footer(text="🔄 Cập nhật mỗi 5 phút · Đổi mốc nhắc qua /lich nhac")
     return embed
 
 
@@ -875,13 +1057,58 @@ class SchedulePanelView(ui.View):
 # Cog — 5 commands × 2 variants (regular + pin)
 # ============================================================
 
+async def _save_panel_subscription(
+    guild_id: int,
+    panel_type: str,
+    channel_id: int,
+    message_id: int,
+    period: str | None = None,
+) -> None:
+    """Upsert vào panel_subscriptions để background task auto-refresh.
+
+    Mỗi (guild, panel_type) chỉ tracked 1 message. Pin panel lần 2 sẽ overwrite
+    entry cũ — background task không refresh message cũ nữa (vẫn còn pin nhưng
+    sẽ stale).
+    """
+    from models.panel_subscription import PanelSubscription
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(
+            select(PanelSubscription)
+            .where(PanelSubscription.guild_id == guild_id)
+            .where(PanelSubscription.panel_type == panel_type)
+        )).scalar_one_or_none()
+        now = utcnow()
+        if row:
+            row.channel_id = channel_id
+            row.message_id = message_id
+            row.period = period
+            row.updated_at = now
+        else:
+            session.add(PanelSubscription(
+                guild_id=guild_id,
+                panel_type=panel_type,
+                channel_id=channel_id,
+                message_id=message_id,
+                period=period,
+                created_at=now,
+                updated_at=now,
+            ))
+        await session.commit()
+
+
 async def _send_panel(
     interaction: discord.Interaction,
     embed: discord.Embed,
     view: ui.View,
     pin: bool,
+    panel_type: str | None = None,
+    period: str | None = None,
 ):
-    """Send panel — pin path defers interaction trước để tránh 'Ứng dụng không phản hồi'."""
+    """Send panel — pin path defers interaction trước để tránh 'Ứng dụng không phản hồi'.
+
+    Khi pin=True và panel_type cung cấp → lưu vào panel_subscriptions để
+    background task auto-refresh mỗi 5 phút.
+    """
     if pin:
         # Defer ngay để Discord biết bot đã nhận; sau đó mới gửi + pin (có thể tốn 1-2s)
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -894,12 +1121,12 @@ async def _send_panel(
             )
             return
         try:
-            await msg.pin(reason=f"Homie Medic panel by {interaction.user}")
+            await msg.pin(reason=f"MedicLog panel by {interaction.user}")
         except discord.Forbidden:
             await interaction.followup.send(
                 embed=build_error_embed(
                     "Đã gửi panel nhưng bot không có quyền **Manage Messages** để pin. "
-                    "Vào server settings → Roles → Cái máy chấm công → bật `Manage Messages`."
+                    "Vào server settings → Roles → bật `Manage Messages` cho bot."
                 ),
                 ephemeral=True,
             )
@@ -910,10 +1137,27 @@ async def _send_panel(
                 ephemeral=True,
             )
             return
+
+        # Lưu subscription cho auto-refresh
+        if panel_type:
+            try:
+                await _save_panel_subscription(
+                    guild_id=interaction.guild_id,
+                    panel_type=panel_type,
+                    channel_id=interaction.channel_id,
+                    message_id=msg.id,
+                    period=period,
+                )
+            except Exception as e:
+                logger.warning(f"Save panel subscription failed: {e}")
+
         await interaction.followup.send(
             embed=discord.Embed(
                 title="✅  Đã pin panel",
-                description=f"Panel đã được pin trong {interaction.channel.mention}. Mọi người trong channel này có thể dùng các nút.",
+                description=(
+                    f"Panel đã được pin trong {interaction.channel.mention}.\n"
+                    f"🔄 Bot sẽ tự cập nhật mỗi 5 phút."
+                ),
                 color=COLOR_DUTY,
             ),
             ephemeral=True,
@@ -952,7 +1196,7 @@ class ControlPanelCog(commands.Cog):
             )
             return
         embed = await build_overview_embed(interaction.guild, interaction.user, "week")
-        await _send_panel(interaction, embed, OverviewPanelView("week"), pin)
+        await _send_panel(interaction, embed, OverviewPanelView("week"), pin, panel_type="overview", period="week")
 
     # ───── DUTY ─────
     @app_commands.command(name="panel-duty", description="✍️ Panel chấm công — hướng dẫn + log gần nhất + top")
@@ -964,7 +1208,7 @@ class ControlPanelCog(commands.Cog):
             )
             return
         embed = await build_duty_embed(interaction.guild, interaction.user)
-        await _send_panel(interaction, embed, DutyPanelView(), pin)
+        await _send_panel(interaction, embed, DutyPanelView(), pin, panel_type="duty")
 
     # ───── LEAVE ─────
     @app_commands.command(name="panel-leave", description="📤 Panel xin nghỉ phép — modal + danh sách đơn")
@@ -976,7 +1220,7 @@ class ControlPanelCog(commands.Cog):
             )
             return
         embed = await build_leave_embed(interaction.guild, interaction.user)
-        await _send_panel(interaction, embed, LeavePanelView(), pin)
+        await _send_panel(interaction, embed, LeavePanelView(), pin, panel_type="leave")
 
     # ───── RESIGN ─────
     @app_commands.command(name="panel-resign", description="⚠️ Panel xin out ngành — cảnh báo + modal nghiêm túc")
@@ -987,8 +1231,8 @@ class ControlPanelCog(commands.Cog):
                 embed=build_error_embed("Cần permission `Manage Messages` để pin."), ephemeral=True,
             )
             return
-        embed = await build_resign_embed()
-        await _send_panel(interaction, embed, ResignPanelView(), pin)
+        embed = await build_resign_embed(interaction.guild)
+        await _send_panel(interaction, embed, ResignPanelView(), pin, panel_type="resign")
 
     # ───── SCHEDULE ─────
     @app_commands.command(name="panel-schedule", description="📅 Panel lịch trực — xem lịch + đăng ký + tuân thủ")
@@ -1000,7 +1244,7 @@ class ControlPanelCog(commands.Cog):
             )
             return
         embed = await build_schedule_embed(interaction.guild, interaction.user)
-        await _send_panel(interaction, embed, SchedulePanelView(), pin)
+        await _send_panel(interaction, embed, SchedulePanelView(), pin, panel_type="schedule")
 
 
 async def setup(bot: commands.Bot):

@@ -869,6 +869,101 @@ async def _backfill_duty_scan_tick(bot: "commands.Bot"):
 
 # ─── Wire-up ─────────────────────────────────────────────────────────────────
 
+@tasks.loop(minutes=5)
+async def refresh_panels_loop(bot: "commands.Bot"):
+    """Auto-refresh tất cả pinned panel mỗi 5 phút.
+
+    Iterate panel_subscriptions → fetch fresh data → edit message.
+    Nếu message bị xoá (404) → xoá entry khỏi DB để không retry hoài.
+    """
+    try:
+        await _refresh_panels_tick(bot)
+    except Exception as e:
+        logger.error(f"[refresh_panels] tick lỗi: {type(e).__name__}: {e}", exc_info=True)
+
+
+async def _refresh_panels_tick(bot: "commands.Bot"):
+    """Iterate panel subscriptions → edit messages với data mới."""
+    from models.panel_subscription import PanelSubscription
+    from bot.cogs.control_panel import (
+        build_overview_embed, build_duty_embed, build_leave_embed,
+        build_resign_embed, build_schedule_embed,
+        OverviewPanelView, DutyPanelView, LeavePanelView,
+        ResignPanelView, SchedulePanelView,
+    )
+
+    async with AsyncSessionLocal() as session:
+        subs = (await session.execute(select(PanelSubscription))).scalars().all()
+        subs = list(subs)
+
+    if not subs:
+        return
+
+    refreshed = 0
+    deleted = 0
+    for sub in subs:
+        guild = bot.get_guild(sub.guild_id)
+        if guild is None:
+            continue
+        channel = guild.get_channel(sub.channel_id)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            continue
+
+        try:
+            message = await channel.fetch_message(sub.message_id)
+        except discord.NotFound:
+            # Message bị xoá → bỏ tracking
+            try:
+                async with AsyncSessionLocal() as s2:
+                    s2_sub = await s2.get(PanelSubscription, (sub.guild_id, sub.panel_type))
+                    if s2_sub:
+                        await s2.delete(s2_sub)
+                        await s2.commit()
+                deleted += 1
+            except Exception as e:
+                logger.debug(f"[refresh_panels] cleanup failed: {e}")
+            continue
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.debug(f"[refresh_panels] fetch msg {sub.message_id} failed: {e}")
+            continue
+
+        # Bot user dùng làm "viewer" cho personalized fields (vd: stats user xem)
+        viewer = guild.me
+
+        try:
+            if sub.panel_type == "overview":
+                period = sub.period or "week"
+                new_embed = await build_overview_embed(guild, viewer, period)
+                new_view = OverviewPanelView(period)
+            elif sub.panel_type == "duty":
+                new_embed = await build_duty_embed(guild, viewer)
+                new_view = DutyPanelView()
+            elif sub.panel_type == "leave":
+                new_embed = await build_leave_embed(guild, viewer)
+                new_view = LeavePanelView()
+            elif sub.panel_type == "resign":
+                new_embed = await build_resign_embed(guild)
+                new_view = ResignPanelView()
+            elif sub.panel_type == "schedule":
+                new_embed = await build_schedule_embed(guild, viewer)
+                new_view = SchedulePanelView()
+            else:
+                continue
+
+            await message.edit(embed=new_embed, view=new_view)
+            refreshed += 1
+        except discord.HTTPException as e:
+            logger.debug(f"[refresh_panels] edit msg {sub.message_id} failed: {e}")
+        except Exception as e:
+            logger.warning(
+                f"[refresh_panels] build embed cho {sub.panel_type} lỗi: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    if refreshed or deleted:
+        logger.info(f"[refresh_panels] refreshed={refreshed} cleaned={deleted}")
+
+
 def start_background_tasks(bot: "commands.Bot"):
     """
     Gọi 1 lần trong setup_hook() để khởi động tất cả loops.
@@ -884,6 +979,7 @@ def start_background_tasks(bot: "commands.Bot"):
     onboarding_scan_loop.before_loop(_wait_ready)
     process_web_decisions_loop.before_loop(_wait_ready)
     backfill_duty_scan_loop.before_loop(_wait_ready)
+    refresh_panels_loop.before_loop(_wait_ready)
 
     if not pre_shift_remind_loop.is_running():
         pre_shift_remind_loop.start(bot)
@@ -895,7 +991,9 @@ def start_background_tasks(bot: "commands.Bot"):
         process_web_decisions_loop.start(bot)
     if not backfill_duty_scan_loop.is_running():
         backfill_duty_scan_loop.start(bot)
+    if not refresh_panels_loop.is_running():
+        refresh_panels_loop.start(bot)
     logger.info(
         "Đã khởi động background tasks: pre_shift, eod_check, "
-        "onboarding_scan, process_web_decisions, backfill_duty_scan"
+        "onboarding_scan, process_web_decisions, backfill_duty_scan, refresh_panels"
     )
