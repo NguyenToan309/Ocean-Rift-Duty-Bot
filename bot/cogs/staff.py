@@ -226,6 +226,7 @@ class StaffCog(commands.Cog):
         nguoi="Nhân sự cần thêm",
         chucvu="Chức vụ",
         khoa="Khoa/Phòng ban (optional)",
+        ngay_vao_lam="Ngày vào làm — định dạng DD/MM/YYYY (optional)",
         lydo="Lý do thêm (BẮT BUỘC ≥3 ký tự)",
     )
     @app_commands.choices(chucvu=POSITION_CHOICES)
@@ -236,6 +237,7 @@ class StaffCog(commands.Cog):
         chucvu: app_commands.Choice[str],
         lydo: str,
         khoa: str | None = None,
+        ngay_vao_lam: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -245,6 +247,24 @@ class StaffCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        # Parse ngay_vao_lam DD/MM/YYYY → datetime aware (timezone của guild)
+        joined_at_dt = None
+        if ngay_vao_lam:
+            try:
+                from datetime import datetime as _dt
+                joined_at_dt = _dt.strptime(ngay_vao_lam.strip(), "%d/%m/%Y")
+                # Localize bằng UTC để consistency với column DateTime(timezone=True)
+                from datetime import timezone as _tz
+                joined_at_dt = joined_at_dt.replace(tzinfo=_tz.utc)
+            except ValueError:
+                await interaction.followup.send(
+                    embed=build_error_embed(
+                        f"Ngày vào làm sai định dạng (`{ngay_vao_lam}`). Dùng DD/MM/YYYY, vd: `01/06/2026`."
+                    ),
+                    ephemeral=True,
+                )
+                return
 
         async with AsyncSessionLocal() as session:
             if not await require_admin(interaction, session):
@@ -272,6 +292,7 @@ class StaffCog(commands.Cog):
                 username=nguoi.display_name,
                 position=chucvu.value,
                 department=(khoa or "").strip() or None,
+                joined_at=joined_at_dt,
                 is_active=True,
             )
             session.add(m)
@@ -286,6 +307,7 @@ class StaffCog(commands.Cog):
                     "staff_username": nguoi.display_name,
                     "position": chucvu.value,
                     "department": khoa,
+                    "joined_at": joined_at_dt.isoformat() if joined_at_dt else None,
                     "note": lydo.strip(),
                     "via": "discord",
                 },
