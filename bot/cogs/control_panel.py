@@ -89,14 +89,10 @@ async def build_overview_embed(guild: discord.Guild, user: discord.User | discor
         )).scalar() or 0
 
     embed = discord.Embed(
-        title="🏥  ·  HOMIE MEDIC  ·  TỔNG QUAN",
+        title=f"🏥  HOMIE MEDIC  ·  Tổng quan {get_period_label(period).lower()}",
         description=(
-            f"### Xin chào **{user.display_name}** 👋\n"
-            f"📊 Thống kê hệ thống — *{get_period_label(period)}*\n"
-            f"```yaml\n"
-            f"Server : {guild.name}\n"
-            f"Members: {guild.member_count}\n"
-            f"```"
+            f"Xin chào **{user.display_name}** 👋\n"
+            f"-# 📊 Thống kê toàn server tại thời điểm hiện tại"
         ),
         color=COLOR_BRAND,
         timestamp=utcnow(),
@@ -104,39 +100,33 @@ async def build_overview_embed(guild: discord.Guild, user: discord.User | discor
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
 
-    # 4-column stat row
+    # 3-column stat row
     embed.add_field(
-        name="⏱️  TỔNG GIỜ TRỰC",
-        value=f"```ml\n{minutes_to_hhmm(totals.minutes or 0)}\n```{totals.sessions or 0} ca trong kỳ",
+        name="⏱️  Tổng giờ trực",
+        value=f"```{minutes_to_hhmm(totals.minutes or 0)}```{totals.sessions or 0} ca trong kỳ",
         inline=True,
     )
     embed.add_field(
-        name="👥  NHÂN SỰ ACTIVE",
-        value=f"```ml\n{totals.active or 0} người\n```Đã chấm công",
+        name="👥  Nhân sự active",
+        value=f"```{totals.active or 0} người```Đã chấm công",
         inline=True,
     )
     embed.add_field(
-        name="📋  LỊCH TRỰC",
-        value=f"```ml\n{total_schedules} ca\n```Đã đăng ký",
+        name="📋  Lịch trực",
+        value=f"```{total_schedules} ca```Đã đăng ký",
         inline=True,
     )
 
     embed.add_field(
-        name="📝  ĐƠN NGHỈ CHỜ DUYỆT",
+        name="📝  Đơn nghỉ chờ duyệt",
         value=(
-            f"🔴 **{pending}** đơn đang chờ" if pending > 0
-            else "✅ Không có đơn nào đang chờ"
+            f"🔴 **{pending}** đơn đang chờ xử lý"
+            if pending > 0 else "✅ Không có đơn nào"
         ),
-        inline=True,
+        inline=False,
     )
-    embed.add_field(
-        name="🌐  WEB DASHBOARD",
-        value=f"[**Mở dashboard →**]({_web_url()}/dashboard)",
-        inline=True,
-    )
-    embed.add_field(name="​", value="​", inline=True)    # Spacer
 
-    embed.set_footer(text=f"⚡ Click button bên dưới để dùng nhanh • {get_period_label(period)}")
+    embed.set_footer(text=f"⚡ Đổi khoảng thời gian bằng dropdown bên dưới")
     return embed
 
 
@@ -163,11 +153,6 @@ class OverviewPanelView(ui.View):
         super().__init__(timeout=None)
         self.period = period
         self.add_item(_PeriodSelect(period, self._on_period_change))
-        self.add_item(ui.Button(
-            label="Mở Web Dashboard", emoji="🌐",
-            style=discord.ButtonStyle.link,
-            url=f"{_web_url()}/dashboard", row=2,
-        ))
 
     async def _on_period_change(self, interaction: discord.Interaction, period: str):
         self.period = period
@@ -293,29 +278,29 @@ async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Me
     channel_mention = f"<#{duty_channel_id}>" if duty_channel_id else "*chưa setup* — dùng `/setup channel`"
 
     embed = discord.Embed(
-        title="✍️  ·  BẢNG CHẤM CÔNG",
+        title="✍️  Bảng chấm công",
         description=(
-            f"### Xin chào, **{user.display_name}** 👋\n"
+            f"Xin chào **{user.display_name}** 👋\n"
             f"📍 Channel chấm công: {channel_mention}\n"
-            f"-# *Chỉ cần forward / screenshot tin nhắn LOG DUTY vào channel này — bot tự xử lý.*"
+            f"-# *Forward hoặc screenshot tin nhắn LOG DUTY vào channel — bot tự xử lý.*"
         ),
         color=COLOR_DUTY, timestamp=utcnow(),
     )
     embed.set_thumbnail(url=user.display_avatar.url)
 
-    # ── Stats cá nhân (nổi bật) ──
+    # ── Stats cá nhân ──
     embed.add_field(
-        name="📅  HÔM NAY",
-        value=f"```ml\n{minutes_to_hhmm(my_today.m or 0)}\n```{my_today.c or 0} ca",
+        name="📅  Hôm nay",
+        value=f"```{minutes_to_hhmm(my_today.m or 0)}```{my_today.c or 0} ca",
         inline=True,
     )
     embed.add_field(
-        name="📆  TUẦN NÀY",
-        value=f"```ml\n{minutes_to_hhmm(my_week.m or 0)}\n```{my_week.c or 0} ca",
+        name="📆  Tuần này",
+        value=f"```{minutes_to_hhmm(my_week.m or 0)}```{my_week.c or 0} ca",
         inline=True,
     )
     embed.add_field(
-        name="🕐  LẦN CUỐI",
+        name="🕐  Lần cuối chấm",
         value=(
             f"<t:{int(my_week.last.timestamp())}:R>"
             if my_week.last else "*Chưa có log*"
@@ -323,23 +308,19 @@ async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Me
         inline=True,
     )
 
-    # ── 2 cách chấm công thực tế ──
+    # ── 2 cách chấm công ──
     embed.add_field(
-        name="🚀  CÁCH CHẤM CÔNG (Auto-scan)",
+        name="🚀  Cách chấm công",
         value=(
-            f"**Cách 1 — Forward tin nhắn** ⏩\n"
-            f"Nhấn giữ tin nhắn LOG DUTY (từ bot bệnh viện) → **Forward** → chọn {channel_mention}.\n"
-            f"Bot đọc text tự động.\n\n"
-            f"**Cách 2 — Chụp ảnh** 📸\n"
-            f"Screenshot tin nhắn LOG DUTY → gửi ảnh vào {channel_mention}.\n"
-            f"Bot OCR tự động.\n\n"
-            f"✅ Bot phản hồi embed *“Đã ghi nhận ca trực”* ngay khi parse thành công.\n"
-            f"❌ Nếu format sai / trùng / sai tên → bot báo lỗi cụ thể (xoá tin & gửi lại)."
+            f"**1.** Forward tin nhắn LOG DUTY → {channel_mention}\n"
+            f"**2.** Hoặc gửi ảnh screenshot LOG DUTY → {channel_mention}\n\n"
+            f"Bot tự OCR/parse → reply embed *Đã ghi nhận ca trực* khi thành công.\n"
+            f"Nếu sai format/tên/trùng → bot báo lỗi cụ thể."
         ),
         inline=False,
     )
 
-    embed.set_footer(text="🔒 Bot khớp tên trong LOG DUTY với Discord ID — không thể chấm hộ người khác · Click ❓ xem format")
+    embed.set_footer(text="🔒 Bot khớp tên với Discord ID — không thể chấm hộ người khác")
     return embed
 
 
@@ -553,40 +534,39 @@ async def build_leave_embed(guild: discord.Guild, user: discord.User | discord.M
         )).scalar() or 0
 
     embed = discord.Embed(
-        title="📤  ·  XIN NGHỈ PHÉP",
+        title="📤  Xin nghỉ phép",
         description=(
-            "### Gửi đơn nghỉ ngắn hạn\n"
-            "Bot post đơn lên channel staff để **vote duyệt**.\n"
-            "-# *Bạn sẽ nhận DM kết quả + Discord embed cập nhật ngay khi staff quyết định.*"
+            "Gửi đơn nghỉ ngắn hạn — staff vote duyệt.\n"
+            "-# *Bạn nhận DM kết quả ngay khi staff quyết định.*"
         ),
         color=COLOR_LEAVE, timestamp=utcnow(),
     )
     embed.add_field(
-        name="📋  ĐƠN CỦA BẠN",
+        name="📋  Đơn của bạn",
         value=(
-            f"⏳ Chờ duyệt: **`{my_pending}`**\n"
-            f"✅ Đã duyệt: **`{my_approved}`**"
+            f"⏳ Chờ duyệt: ` {my_pending} `\n"
+            f"✅ Đã duyệt: ` {my_approved} `"
         ),
         inline=True,
     )
     embed.add_field(
-        name="🗂️  TỔNG SERVER",
-        value=f"🔴 **`{server_pending}`** đơn đang chờ",
+        name="🗂️  Tổng server",
+        value=f"🔴 ` {server_pending} ` đơn đang chờ",
         inline=True,
     )
     embed.add_field(
-        name="⏱️  THỜI HẠN DUYỆT",
-        value="Tối đa **24h**\nkể từ lúc gửi đơn",
+        name="⏱️  Thời hạn duyệt",
+        value="Tối đa **24h**\nkể từ lúc gửi",
         inline=True,
     )
 
     embed.add_field(
-        name="📝  HƯỚNG DẪN",
+        name="📝  Hướng dẫn",
         value=(
-            "• Click **📤 Gửi đơn xin nghỉ** để mở form\n"
-            "• Điền loại nghỉ + ngày + lý do\n"
-            "• Đơn sẽ được staff vote — đa số duyệt = approved\n"
-            "• Nếu approved: bot tự note vào lịch trực + ghi audit log"
+            "**1.** Click **Gửi đơn xin nghỉ** → mở form\n"
+            "**2.** Điền loại nghỉ + ngày + lý do\n"
+            "**3.** Staff vote — đa số duyệt = approved\n"
+            "**4.** Nếu approved: bot auto-note vào lịch + audit log"
         ),
         inline=False,
     )
@@ -597,11 +577,6 @@ async def build_leave_embed(guild: discord.Guild, user: discord.User | discord.M
 class LeavePanelView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(ui.Button(
-            label="Mở Web để duyệt", emoji="🌐",
-            style=discord.ButtonStyle.link,
-            url=f"{_web_url()}/dashboard", row=1,
-        ))
 
     @ui.button(label="Gửi đơn xin nghỉ", emoji="📤", style=discord.ButtonStyle.success, row=0)
     async def btn_submit(self, interaction: discord.Interaction, _: ui.Button):
@@ -698,11 +673,10 @@ class ResignModal(ui.Modal, title="⚠️ Xin out ngành"):
 
 async def build_resign_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="⚠️  ·  XIN OUT NGÀNH",
+        title="⚠️  Xin out ngành",
         description=(
-            "### 🚨 Quyết định NGHIÊM TRỌNG\n"
-            "Đơn xin out sẽ:\n"
-            "🔴 Yêu cầu vote duyệt từ **nhiều staff** (không 1 admin tự duyệt được)\n"
+            "**🚨 Quyết định nghiêm trọng** — đơn xin out sẽ:\n"
+            "🔴 Yêu cầu vote duyệt từ **nhiều staff** (1 admin không tự duyệt được)\n"
             "🔴 Nếu duyệt: bot **tự gỡ role nhân viên** vào ngày đã chọn\n"
             "🔴 Huỷ **mọi lịch trực** còn lại của bạn\n\n"
             "-# 💡 *Chỉ muốn nghỉ ngắn hạn? Dùng `/panel-leave` thay vì panel này.*"
@@ -710,7 +684,7 @@ async def build_resign_embed() -> discord.Embed:
         color=COLOR_RESIGN, timestamp=utcnow(),
     )
     embed.add_field(
-        name="✅  CHECKLIST TRƯỚC KHI GỬI",
+        name="✅  Checklist trước khi gửi",
         value=(
             "```diff\n"
             "+ Đã hoàn thành công việc đang dang dở\n"
@@ -786,38 +760,36 @@ async def build_schedule_embed(guild: discord.Guild, user: discord.User | discor
         )).scalar() or 0
 
     embed = discord.Embed(
-        title="📅  ·  LỊCH TRỰC",
+        title="📅  Lịch trực hàng tuần",
         description=(
-            "### Quản lý ca trực hàng tuần\n"
-            "Bot sẽ **nhắc bạn trước giờ vào ca** và tự tính độ tuân thủ\n"
+            "Quản lý ca trực — bot **nhắc trước giờ vào ca** và tính độ tuân thủ "
             "dựa trên log chấm công thực tế."
         ),
         color=COLOR_SCHEDULE, timestamp=utcnow(),
     )
 
     embed.add_field(
-        name="🗓️  CỦA BẠN",
-        value=f"```ml\n{my_count} ca/tuần\n```",
+        name="🗓️  Của bạn",
+        value=f"```{my_count} ca/tuần```",
         inline=True,
     )
     embed.add_field(
-        name="👥  NGƯỜI ĐÃ ĐĂNG KÝ",
-        value=f"```ml\n{total_members} người\n```",
+        name="👥  Đã đăng ký",
+        value=f"```{total_members} người```",
         inline=True,
     )
     embed.add_field(
-        name="📋  TỔNG SERVER",
-        value=f"```ml\n{total_count} ca\n```",
+        name="📋  Tổng server",
+        value=f"```{total_count} ca```",
         inline=True,
     )
 
     embed.add_field(
-        name="⚙️  THAO TÁC NHANH",
+        name="⚙️  Thao tác nhanh",
         value=(
-            "• **📅 Lịch của tôi** — xem ca đã đăng ký theo thứ\n"
-            "• **➕ Đăng ký ca mới** — hướng dẫn dùng `/dangky`\n"
-            "• **📊 Báo cáo tuân thủ** — xem rate on-time/late/missed\n"
-            "• **🌐 Xem lịch trên Web** — UI calendar tháng/tuần"
+            "**📅 Lịch của tôi** — xem ca đã đăng ký theo thứ\n"
+            "**➕ Đăng ký ca mới** — hướng dẫn dùng `/dangky`\n"
+            "**📊 Báo cáo tuân thủ** — rate on-time / late / missed"
         ),
         inline=False,
     )
@@ -828,11 +800,6 @@ async def build_schedule_embed(guild: discord.Guild, user: discord.User | discor
 class SchedulePanelView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(ui.Button(
-            label="Xem lịch trên Web", emoji="🌐",
-            style=discord.ButtonStyle.link,
-            url=f"{_web_url()}/dashboard", row=1,
-        ))
 
     @ui.button(label="Lịch của tôi", emoji="📅", style=discord.ButtonStyle.primary, row=0)
     async def btn_my_schedule(self, interaction: discord.Interaction, _: ui.Button):
@@ -891,9 +858,8 @@ class SchedulePanelView(ui.View):
         embed = discord.Embed(
             title="📊  Báo cáo tuân thủ",
             description=(
-                "### Slash command đầy đủ: `/lich tongket`\n\n"
-                "Hoặc xem trực quan trên **Web Dashboard**:\n"
-                "→ Lịch trực → tab **Tuân thủ**"
+                "Slash command: `/lich tongket`\n\n"
+                "Xem tỷ lệ on-time / late / missed của từng thành viên theo kỳ."
             ),
             color=COLOR_SCHEDULE, timestamp=utcnow(),
         )
