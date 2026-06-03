@@ -84,14 +84,33 @@ DUTY_LOG_LOOSE_PATTERN_V1 = re.compile(
 # Dấu phân tách label-value: chấp nhận :, ：, ; (OCR đôi khi đọc nhầm).
 
 _LABEL_SEP = r"[:：;]"
+
+# Lookahead stop pattern: dùng cho các field text (name, discord, reason) để
+# stop CAPTURE khi gặp label kế tiếp. Lý do: EasyOCR với paragraph=True có
+# thể join hết các dòng vào 1 paragraph (không có \n), khi đó regex greedy
+# `[^\n]+` sẽ nuốt cả block log thành "name" → vượt 100 ký tự → reject.
+# Lookahead này chấp nhận khoảng trắng + 1 trong các label kế tiếp HOẶC
+# end-of-line / end-of-string.
+_NEXT_LABEL = (
+    r"(?=\s+(?:"
+    r"Discord\s*[:：;]"        # "Discord:"
+    r"|T\S{0,2}n\s+[Dd]iscord"  # "Tên discord"
+    r"|T\S{0,2}ng\s*th"         # "Tổng thời..."
+    r"|B\S{0,2}t\s+[dđ]"        # "Bắt đầu"
+    r"|K\S{0,2}t\s+th"          # "Kết thúc"
+    r"|L\S{0,2}\s+do"           # "Lý do"
+    r")|\n|$)"
+)
+
 _FIELD_NAME = re.compile(
-    r"T\S{0,2}n\s*" + _LABEL_SEP + r"\s*(?P<name>[^\n]+)",
+    # Non-greedy + stop ở label kế tiếp HOẶC newline HOẶC EOL.
+    r"T\S{0,2}n\s*" + _LABEL_SEP + r"\s*(?P<name>[^\n]+?)" + _NEXT_LABEL,
     re.IGNORECASE,
 )
 _FIELD_DISCORD = re.compile(
     # Match "Discord:" hoặc "Tên discord:" / "Tên Discord:" — Discord là tên
     # riêng tiếng Anh nên thường OCR đọc đúng, không cần loose.
-    r"(?:T\S{0,2}n\s+)?Discord\s*" + _LABEL_SEP + r"\s*(?P<discord>[^\n]+)",
+    r"(?:T\S{0,2}n\s+)?Discord\s*" + _LABEL_SEP + r"\s*(?P<discord>[^\n]+?)" + _NEXT_LABEL,
     re.IGNORECASE,
 )
 _FIELD_DURATION_V2 = re.compile(

@@ -350,6 +350,47 @@ class TestParseV2:
         # 22:43 → 23:01:58 = ~18.9 phút, ghi 18 → chênh < 5 → OK
         assert r.validate() == []
 
+    def test_v2_ocr_single_line(self):
+        """OCR EasyOCR với paragraph=True join hết các field vào 1 dòng.
+
+        Regression bug: regex `[^\\n]+` greedy → username nuốt cả block log
+        → vượt 100 ký tự → /log upload reject 'Tên người dùng quá dài'.
+        Fix: non-greedy + lookahead stop ở label kế tiếp.
+        """
+        single = (
+            "CAPY TOWN LOGS "
+            "Tên: Báo Lê (CP890743) "
+            "Discord: @VT | Báo "
+            "Tổng thời gian: 1 Giờ 11 Phút "
+            "Bắt đầu: 02/06/2026 23:59:39 "
+            "Kết thúc: 03/06/2026 01:11:12"
+        )
+        r = parse_duty_text(single)
+        assert r is not None
+        assert r.username == "Báo Lê (CP890743)"
+        assert len(r.username) <= 100
+        assert r.discord_handle == "@VT | Báo"
+        assert r.duration_minutes == 71
+
+    def test_v2_long_exit_reason_doesnt_eat_name(self):
+        """Lý do rời rất dài (cả paragraph từ AntiCheat) — username vẫn ngắn."""
+        text = (
+            "CAPY TOWN LOGS\n"
+            "Tên: Trịnh Quốc Trường (Panda)\n"
+            "Discord: @TTS | Trịnh Quốc Trường\n"
+            "Tổng thời gian: 2 Giờ 13 Phút\n"
+            "Bắt đầu: 02/06/2026 21:31:38\n"
+            "Kết thúc: 02/06/2026 23:45:31\n"
+            "Lý do rời: Bạn đã bị cấm bởi hệ thống AntiCheat. Lệnh cấm này "
+            "không bao giờ hết hạn. Nếu bạn cho rằng lệnh cấm này là sai, "
+            "vui lòng liên hệ ban quản trị máy chủ."
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.username == "Trịnh Quốc Trường (Panda)"
+        assert len(r.username) <= 100
+        assert r.duration_minutes == 133
+
     def test_v2_ocr_no_diacritics(self):
         """OCR trên ảnh thường MẤT dấu tiếng Việt — parser V2 phải vẫn nhận
 
