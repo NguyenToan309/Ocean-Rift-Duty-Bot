@@ -888,16 +888,40 @@ class LogDutyCog(commands.Cog):
 
         image_bytes = await anh.read()
 
-        # OCR — chạy trong thread pool, không block event loop
+        # OCR — chạy trong thread pool, không block event loop.
+        # extract_duty_from_image trả về (parsed, raw_text) khi cần debug;
+        # phiên bản hiện tại trả None nếu parse fail — ta gọi lại OCR raw để
+        # show cho user nếu fail (giúp họ biết chụp lại như nào).
         parsed = await extract_duty_from_image(image_bytes, mime)
         if parsed is None:
+            # Lấy raw OCR text để show user — giúp biết OCR đọc được gì
+            raw_text = ""
+            try:
+                from bot.utils.ocr import _run_ocr, _preprocess_image, _get_ocr_semaphore
+                import asyncio as _aio
+                processed = _preprocess_image(image_bytes)
+                async with _get_ocr_semaphore():
+                    loop = _aio.get_running_loop()
+                    raw_text = await loop.run_in_executor(None, _run_ocr, processed)
+            except Exception as e:
+                logger.debug(f"OCR re-fetch failed for error message: {e}")
+
+            # Giới hạn 400 ký tự + escape ký tự code block
+            snippet = (raw_text or "").replace("```", "''' ")[:400]
+            if len(raw_text or "") > 400:
+                snippet += "..."
+
+            desc = (
+                "Bot không nhận diện được định dạng LOG DUTY trong ảnh.\n\n"
+                "**📋 Bot đọc được từ ảnh:**\n"
+                f"```\n{snippet or '(không đọc được chữ nào)'}\n```\n"
+                "**💡 Mẹo:**\n"
+                "• Ảnh phải có đủ: **Tên**, **Tổng thời gian**, **Bắt đầu**, **Kết thúc**\n"
+                "• Nếu OCR đọc sai chữ → chụp lại ảnh rõ hơn (zoom in vào phần text)\n"
+                "• Hoặc gửi text LOG DUTY thẳng vào kênh chấm công — bot tự xử lý"
+            )
             await interaction.followup.send(
-                embed=build_error_embed(
-                    "Không tìm thấy định dạng LOG DUTY trong ảnh.\n"
-                    "Hãy đảm bảo ảnh chứa đầy đủ: **Tên**, **Thời gian làm việc**, "
-                    "**Thời gian bắt đầu**, **Thời gian kết thúc**.\n"
-                    "Nếu ảnh mờ, hãy thử chụp lại rõ hơn hoặc dùng `/log forward` để paste text."
-                ),
+                embed=build_error_embed(desc),
                 ephemeral=True,
             )
             return

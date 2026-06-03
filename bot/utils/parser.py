@@ -102,6 +102,41 @@ _NEXT_LABEL = (
     r")|\n|$)"
 )
 
+# Pattern dùng cho normalize_for_ocr — match khoảng trắng + label kế tiếp
+# (KHÔNG ở đầu dòng), thay bằng newline + label để parser regex chạy đúng.
+# Dùng fixed-width lookbehind (?<=[^\n]) thay vì variable lookbehind (?<!^).
+_LABEL_HEAD_PAT = re.compile(
+    r"(?<=[^\n])"      # phải có ký tự non-newline ngay trước (không ở đầu)
+    r"[ \t]+"          # ăn khoảng trắng ngang giữa value cũ và label mới
+    r"(?="
+    r"T\S{0,2}n\s+[Dd]iscord"     # "Tên discord"
+    r"|Discord\s*[:：;]"           # "Discord:"
+    r"|T\S{0,2}ng\s*th\S{0,2}i"   # "Tổng thời..."
+    r"|B\S{0,2}t\s+[dđ]\S{0,2}u"  # "Bắt đầu"
+    r"|K\S{0,2}t\s+th\S{0,2}c"    # "Kết thúc"
+    r"|L\S{0,2}\s+do\s+r"          # "Lý do rời"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def normalize_ocr_text(text: str) -> str:
+    """Chèn '\\n' trước mỗi label nhận biết được để parser regex chạy đúng.
+
+    EasyOCR đôi khi gộp tất cả label + value vào 1 dòng (paragraph=True).
+    Khi đó text trông như:
+        "CAPY TOWN LOGS Tên: Báo Lê Discord: @VT Tổng thời gian: 1 Giờ ..."
+    Normalize sẽ insert \\n trước "Discord:", "Tổng thời gian:", v.v. để regex
+    field-by-field chạy đúng:
+        "CAPY TOWN LOGS\\nTên: Báo Lê\\nDiscord: @VT\\nTổng thời gian: 1 Giờ ..."
+
+    Idempotent: text đã có \\n thì không thêm nữa.
+    """
+    if not text:
+        return text
+    return _LABEL_HEAD_PAT.sub(r"\n", text)
+
+
 _FIELD_NAME = re.compile(
     # Non-greedy + stop ở label kế tiếp HOẶC newline HOẶC EOL.
     r"T\S{0,2}n\s*" + _LABEL_SEP + r"\s*(?P<name>[^\n]+?)" + _NEXT_LABEL,
@@ -340,10 +375,18 @@ def parse_duty_text(text: str) -> ParsedDutyLog | None:
     # Chuẩn hoá: bỏ bullet ký tự thường gặp ở đầu/giữa
     text = re.sub(r"[•·●○◦▾▸▼►]+", " ", text)
 
-    # Thử V2 trước vì có nhiều thông tin hơn (discord + reason)
+    # Thử V2 trực tiếp trước
     result = _parse_v2(text)
     if result:
         return result
+
+    # OCR có thể gộp tất cả field vào 1 dòng → normalize chèn \n trước mỗi
+    # label rồi thử V2 lần nữa.
+    normalized = normalize_ocr_text(text)
+    if normalized != text:
+        result = _parse_v2(normalized)
+        if result:
+            return result
 
     # Fallback V1
     return _parse_v1(text)
