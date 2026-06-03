@@ -350,6 +350,22 @@ class TestParseV2:
         # 22:43 → 23:01:58 = ~18.9 phút, ghi 18 → chênh < 5 → OK
         assert r.validate() == []
 
+    def test_normalize_ocr_inserts_newlines(self):
+        """normalize_ocr_text chèn \\n trước mỗi label kế tiếp."""
+        from bot.utils.parser import normalize_ocr_text
+        single = "CAPY TOWN LOGS Tên: Báo Lê Discord: @VT Tổng thời gian: 1 Giờ"
+        norm = normalize_ocr_text(single)
+        # Mỗi label kế tiếp phải có \n trước
+        assert "\nDiscord:" in norm
+        assert "\nTổng thời gian:" in norm
+
+    def test_normalize_idempotent_with_newlines(self):
+        """Text đã có \\n không bị normalize đè thêm \\n."""
+        from bot.utils.parser import normalize_ocr_text
+        clean = "Tên: A\nDiscord: B\nTổng thời gian: 1 Phút"
+        # Số \n trong original
+        assert normalize_ocr_text(clean).count("\n") == clean.count("\n")
+
     def test_v2_ocr_single_line(self):
         """OCR EasyOCR với paragraph=True join hết các field vào 1 dòng.
 
