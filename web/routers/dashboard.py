@@ -218,11 +218,10 @@ async def get_attendance_dashboard(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Aggregate query: session_count + total + avg + max + min + first + last cho mỗi user
+    # Aggregate per user_id (gộp các username khác nhau cùng 1 discord user).
     rows = await session.execute(
         select(
             DutyLog.user_id,
-            DutyLog.username,
             func.count(DutyLog.id).label("session_count"),
             func.coalesce(func.sum(DutyLog.duration_minutes), 0).label("total_minutes"),
             func.max(DutyLog.duration_minutes).label("longest"),
@@ -231,12 +230,20 @@ async def get_attendance_dashboard(
             func.max(DutyLog.started_at).label("last_log_at"),
         )
         .where(DutyLog.guild_id == guild_id)
+        .where(DutyLog.user_id.isnot(None))
         .where(DutyLog.started_at >= start)
         .where(DutyLog.started_at <= end)
-        .group_by(DutyLog.user_id, DutyLog.username)
+        .group_by(DutyLog.user_id)
         .order_by(func.sum(DutyLog.duration_minutes).desc())
     )
     log_data = rows.all()
+
+    # Resolve display name qua helper (binding → latest log username trong period)
+    from utils.ranking_utils import resolve_display_names
+    _log_uids = [r.user_id for r in log_data if r.user_id is not None]
+    _name_map = await resolve_display_names(
+        session, guild_id=guild_id, user_ids=_log_uids, start=start, end=end,
+    )
 
     # Lấy compliance entries để đếm on_time/late/missed per user
     from bot.utils.schedule_engine import (
@@ -296,7 +303,7 @@ async def get_attendance_dashboard(
 
         items.append({
             "user_id": str(uid),  # luôn trả Discord ID — endpoint /daily đã enforce permission riêng
-            "username": row.username,
+            "username": _name_map.get(uid) or "—",
             "session_count": row.session_count,
             "total_minutes": row.total_minutes,
             "total_hhmm": minutes_to_hhmm(row.total_minutes),
@@ -311,16 +318,12 @@ async def get_attendance_dashboard(
         })
 
     # Add users có schedule nhưng KHÔNG log trong kỳ → status "vắng hoàn toàn"
-    for uid in users_with_schedule - users_with_logs:
-        # Username từ duty_logs gần nhất ngoài kỳ
-        name_row = await session.execute(
-            select(DutyLog.username)
-            .where(DutyLog.guild_id == guild_id)
-            .where(DutyLog.user_id == uid)
-            .order_by(DutyLog.id.desc())
-            .limit(1)
-        )
-        username = name_row.scalar_one_or_none() or f"User#{uid}"
+    _absent_uids = list(users_with_schedule - users_with_logs)
+    _absent_name_map = await resolve_display_names(
+        session, guild_id=guild_id, user_ids=_absent_uids,
+    ) if _absent_uids else {}
+    for uid in _absent_uids:
+        username = _absent_name_map.get(uid) or f"User#{uid}"
 
         items.append({
             "user_id": str(uid),  # luôn trả Discord ID — endpoint /daily đã enforce permission riêng
