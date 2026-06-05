@@ -90,10 +90,12 @@ export function useRanking(
   period: string,
   mode: 'top' | 'bottom' = 'top',
   limit = 20,
+  start?: string,
+  end?: string,
 ) {
   return useAsync<RankingRow[]>(
-    () => (guildId ? api.ranking(guildId, period, mode, limit) : Promise.resolve([])),
-    [guildId, period, mode, limit],
+    () => (guildId ? api.ranking(guildId, period, mode, limit, start, end) : Promise.resolve([])),
+    [guildId, period, mode, limit, start, end],
   );
 }
 
