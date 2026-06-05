@@ -117,21 +117,12 @@ async def build_overview_embed(guild: discord.Guild, user: discord.User | discor
             .where(MemberSchedule.guild_id == guild.id)
             .where(MemberSchedule.is_active == True)  # noqa: E712
         )).scalar() or 0
-        # Top 5 user theo tổng giờ tuần này
-        top_rows = (await session.execute(
-            select(
-                DutyLog.user_id,
-                DutyLog.username,
-                func.sum(DutyLog.duration_minutes).label("minutes"),
-                func.count(DutyLog.id).label("sessions"),
-            )
-            .where(DutyLog.guild_id == guild.id)
-            .where(DutyLog.started_at >= start)
-            .where(DutyLog.started_at <= end)
-            .group_by(DutyLog.user_id, DutyLog.username)
-            .order_by(func.sum(DutyLog.duration_minutes).desc())
-            .limit(5)
-        )).all()
+        # Top 5 — gộp theo discord_user_id qua shared helper
+        from utils.ranking_utils import aggregate_ranking
+        top_rows = await aggregate_ranking(
+            session, guild_id=guild.id, start=start, end=end,
+            order="desc", limit=5,
+        )
 
     period_str = _format_period_short(period, start, end, tz)
     embed = discord.Embed(
@@ -168,8 +159,8 @@ async def build_overview_embed(guild: discord.Guild, user: discord.User | discor
                  " ─── ────────────────────── ─────────  ────"]
         for i, r in enumerate(top_rows):
             medal = medals[i] if i < len(medals) else f" {i+1}"
-            name = (r.username or "—")[:22].ljust(22)
-            hhmm = minutes_to_hhmm(r.minutes or 0).rjust(9)
+            name = (r.display_name or "—")[:22].ljust(22)
+            hhmm = minutes_to_hhmm(r.total_minutes or 0).rjust(9)
             sess = str(r.sessions or 0).rjust(3)
             lines.append(f"  {medal}  {name} {hhmm}   {sess}")
         lines.append("```")
@@ -264,15 +255,11 @@ class OverviewPanelView(ui.View):
         tz = await _fetch_guild_tz(interaction.guild_id)
         start, end = get_period_range(self.period, tz_str=tz)
         async with AsyncSessionLocal() as session:
-            rows = (await session.execute(
-                select(DutyLog.username, func.sum(DutyLog.duration_minutes).label("m"), func.count(DutyLog.id).label("c"))
-                .where(DutyLog.guild_id == interaction.guild_id)
-                .where(DutyLog.started_at >= start)
-                .where(DutyLog.started_at <= end)
-                .group_by(DutyLog.user_id, DutyLog.username)
-                .order_by(func.sum(DutyLog.duration_minutes).desc())
-                .limit(10)
-            )).all()
+            from utils.ranking_utils import aggregate_ranking
+            rows = await aggregate_ranking(
+                session, guild_id=interaction.guild_id, start=start, end=end,
+                order="desc", limit=10,
+            )
         embed = discord.Embed(
             title=f"🏆  Top 10 trực — {get_period_label(self.period)}",
             color=COLOR_GOLD, timestamp=utcnow(),
@@ -280,13 +267,13 @@ class OverviewPanelView(ui.View):
         if not rows:
             embed.description = "*Chưa có dữ liệu trong kỳ này.*"
         else:
-            max_m = rows[0].m or 1
+            max_m = rows[0].total_minutes or 1
             medals = ["🥇", "🥈", "🥉"] + [f"`#{i:>2}`" for i in range(4, 11)]
             lines = []
             for i, r in enumerate(rows):
-                bar_len = int((r.m / max_m) * 12)
+                bar_len = int((r.total_minutes / max_m) * 12)
                 bar = "█" * bar_len + "░" * (12 - bar_len)
-                lines.append(f"{medals[i]} **{r.username}** · `{minutes_to_hhmm(r.m)}` ({r.c} ca)\n`{bar}`")
+                lines.append(f"{medals[i]} **{r.display_name}** · `{minutes_to_hhmm(r.total_minutes)}` ({r.sessions} ca)\n`{bar}`")
             embed.description = "\n\n".join(lines)
         embed.set_footer(text="Dùng /top để xem bảng xếp hạng chi tiết")
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -328,22 +315,33 @@ async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Me
     brand = await _get_brand_name()
 
     async with AsyncSessionLocal() as session:
-        # Top 10 toàn server (group by user)
+        # Top 10 toàn server — gộp theo discord_user_id.
+        # Query trực tiếp (không qua helper) vì cần thêm field MAX(started_at)
+        # cho cột "Lần cuối" — helper aggregate_ranking không trả trường này.
         top_rows = (await session.execute(
             select(
                 DutyLog.user_id,
-                DutyLog.username,
                 func.sum(DutyLog.duration_minutes).label("minutes"),
                 func.count(DutyLog.id).label("sessions"),
                 func.max(DutyLog.started_at).label("last"),
             )
             .where(DutyLog.guild_id == guild.id)
+            .where(DutyLog.user_id.isnot(None))
             .where(DutyLog.started_at >= week_start)
             .where(DutyLog.started_at <= week_end)
-            .group_by(DutyLog.user_id, DutyLog.username)
+            .group_by(DutyLog.user_id)
             .order_by(func.sum(DutyLog.duration_minutes).desc())
             .limit(10)
         )).all()
+
+        # Resolve display name qua helper
+        from utils.ranking_utils import resolve_display_names
+        _top_uids = [r.user_id for r in top_rows if r.user_id is not None]
+        _name_map = await resolve_display_names(
+            session, guild_id=guild.id, user_ids=_top_uids,
+            start=week_start, end=week_end,
+        )
+
         # Channel chấm công đã setup
         cfg = (await session.execute(
             select(GuildConfig).where(GuildConfig.guild_id == guild.id)
@@ -372,7 +370,7 @@ async def build_duty_embed(guild: discord.Guild, user: discord.User | discord.Me
                  " ─── ────────────────────── ─────────  ────  ─────────"]
         for i, r in enumerate(top_rows):
             medal = medals[i] if i < 3 else f" {i+1}"
-            name = (r.username or "—")[:22].ljust(22)
+            name = (_name_map.get(r.user_id) or "—")[:22].ljust(22)
             hhmm = minutes_to_hhmm(r.minutes or 0).rjust(9)
             sess = str(r.sessions or 0).rjust(3)
             last = _relative_ago(r.last).rjust(9)
@@ -495,15 +493,11 @@ class DutyPanelView(ui.View):
         tz = await _fetch_guild_tz(interaction.guild_id)
         start, end = get_period_range("week", tz_str=tz)
         async with AsyncSessionLocal() as session:
-            rows = (await session.execute(
-                select(DutyLog.username, func.sum(DutyLog.duration_minutes).label("m"), func.count(DutyLog.id).label("c"))
-                .where(DutyLog.guild_id == interaction.guild_id)
-                .where(DutyLog.started_at >= start)
-                .where(DutyLog.started_at <= end)
-                .group_by(DutyLog.user_id, DutyLog.username)
-                .order_by(func.sum(DutyLog.duration_minutes).desc())
-                .limit(5)
-            )).all()
+            from utils.ranking_utils import aggregate_ranking
+            rows = await aggregate_ranking(
+                session, guild_id=interaction.guild_id, start=start, end=end,
+                order="desc", limit=5,
+            )
         embed = discord.Embed(
             title="🏆  Top 5 trực tuần này",
             color=COLOR_GOLD, timestamp=utcnow(),
@@ -511,15 +505,15 @@ class DutyPanelView(ui.View):
         if not rows:
             embed.description = "*Chưa có ai trực tuần này.*"
         else:
-            max_m = rows[0].m or 1
+            max_m = rows[0].total_minutes or 1
             medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
             lines = []
             for i, r in enumerate(rows):
-                bar_len = int((r.m / max_m) * 15)
+                bar_len = int((r.total_minutes / max_m) * 15)
                 bar = "█" * bar_len + "░" * (15 - bar_len)
                 lines.append(
-                    f"{medals[i]}  **{r.username}** — `{minutes_to_hhmm(r.m)}`\n"
-                    f"`{bar}` *{r.c} ca*"
+                    f"{medals[i]}  **{r.display_name}** — `{minutes_to_hhmm(r.total_minutes)}`\n"
+                    f"`{bar}` *{r.sessions} ca*"
                 )
             embed.description = "\n\n".join(lines)
         await interaction.followup.send(embed=embed, ephemeral=True)
