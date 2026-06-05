@@ -140,47 +140,12 @@ async def get_overview(
     )
     row = totals.first()
 
-    # Top 5 — group by user_id only để gộp các log của cùng 1 discord user
-    # (cùng owner có thể có nhiều tên ingame khác nhau).
-    top5 = await session.execute(
-        select(
-            DutyLog.user_id,
-            func.sum(DutyLog.duration_minutes).label("total_minutes"),
-            func.count(DutyLog.id).label("sessions"),
-        )
-        .where(DutyLog.guild_id == guild_id)
-        .where(DutyLog.started_at >= start)
-        .where(DutyLog.started_at <= end)
-        .group_by(DutyLog.user_id)
-        .order_by(func.sum(DutyLog.duration_minutes).desc())
-        .limit(5)
+    # Top 5 — dùng shared helper để gộp theo discord_user_id
+    from utils.ranking_utils import aggregate_ranking
+    top5_rows = await aggregate_ranking(
+        session, guild_id=guild_id, start=start, end=end, order="desc", limit=5,
     )
-    top5_rows = list(top5.all())
-
-    # Resolve display name từ binding (current_ingame_name) hoặc log gần nhất
-    _top5_uids = {r.user_id for r in top5_rows if r.user_id}
-    from models.duty_identity_binding import DutyIdentityBinding
-    _binding_map: dict[int, str] = {}
-    _latest_name_map: dict[int, str] = {}
-    if _top5_uids:
-        b_rows = await session.execute(
-            select(DutyIdentityBinding.discord_user_id, DutyIdentityBinding.current_ingame_name)
-            .where(DutyIdentityBinding.guild_id == guild_id)
-            .where(DutyIdentityBinding.discord_user_id.in_(_top5_uids))
-        )
-        _binding_map = {b.discord_user_id: b.current_ingame_name for b in b_rows.all()}
-        # Fallback: tên gần nhất trong period
-        n_rows = await session.execute(
-            select(DutyLog.user_id, DutyLog.username)
-            .where(DutyLog.guild_id == guild_id)
-            .where(DutyLog.user_id.in_(_top5_uids))
-            .where(DutyLog.started_at >= start)
-            .where(DutyLog.started_at <= end)
-            .order_by(DutyLog.user_id, DutyLog.started_at.desc())
-        )
-        for r in n_rows.all():
-            if r.user_id not in _latest_name_map:
-                _latest_name_map[r.user_id] = r.username
+    _top5_uids = {r.user_id for r in top5_rows}
 
     # Batch resolve Discord avatars cho top5
     from web.utils.discord_resolver import batch_resolve_user_info
@@ -194,7 +159,7 @@ async def get_overview(
         "top5": [
             {
                 "user_id": str(r.user_id) if r.user_id else None,
-                "username": _binding_map.get(r.user_id) or _latest_name_map.get(r.user_id) or "—",
+                "username": r.display_name,
                 "avatar_url": (_top5_info.get(r.user_id) or {}).get("avatar_url"),
                 "total_minutes": r.total_minutes,
                 "total_hhmm": minutes_to_hhmm(r.total_minutes),
