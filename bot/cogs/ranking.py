@@ -28,34 +28,23 @@ async def _get_ranking(
     limit: int = 10,
 ) -> list[dict]:
     """
-    Query top/bottom theo khoảng thời gian.
+    Query top/bottom theo khoảng thời gian. Gộp theo discord_user_id qua
+    shared helper — tránh duplicate khi user có nhiều tên ingame.
     order: "desc" = nhiều nhất trước, "asc" = ít nhất trước
     """
-    total_minutes_col = func.sum(DutyLog.duration_minutes).label("total_minutes")
-    direction = total_minutes_col.desc() if order == "desc" else total_minutes_col.asc()
-
-    result = await session.execute(
-        select(
-            DutyLog.user_id,
-            DutyLog.username,
-            total_minutes_col,
-            func.count(DutyLog.id).label("session_count"),
-        )
-        .where(DutyLog.guild_id == guild_id)
-        .where(DutyLog.started_at >= start)
-        .where(DutyLog.started_at <= end)
-        .group_by(DutyLog.user_id, DutyLog.username)
-        .order_by(direction)
-        .limit(limit)
+    from utils.ranking_utils import aggregate_ranking
+    rows = await aggregate_ranking(
+        session, guild_id=guild_id, start=start, end=end,
+        order=order, limit=limit,
     )
     return [
         {
-            "user_id": row.user_id,
-            "username": row.username,
-            "total_minutes": row.total_minutes,
-            "session_count": row.session_count,
+            "user_id": r.user_id,
+            "username": r.display_name,
+            "total_minutes": r.total_minutes,
+            "session_count": r.sessions,
         }
-        for row in result.all()
+        for r in rows
     ]
 
 
