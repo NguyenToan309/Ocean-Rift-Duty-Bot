@@ -142,29 +142,38 @@ async def download_export(
         period_label = {"day": "Hôm nay", "week": "Tuần này", "month": "Tháng này", "quarter": "Quý này"}.get(period, period)
 
     if mode == "ranking":
-        # Aggregate: 1 row/user, sort desc theo tổng phút
+        # Aggregate: 1 row/discord_user_id (gộp các username khác nhau cùng owner).
+        # first_log/last_log lấy riêng vì ranking_utils.aggregate_ranking
+        # không trả 2 trường này — cần thêm query phụ.
         rank_result = await session.execute(
             select(
                 DutyLog.user_id,
-                DutyLog.username,
                 func.sum(DutyLog.duration_minutes).label("total_minutes"),
                 func.count(DutyLog.id).label("session_count"),
                 func.min(DutyLog.started_at).label("first_log"),
                 func.max(DutyLog.started_at).label("last_log"),
             )
             .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id.isnot(None))
             .where(DutyLog.started_at >= start)
             .where(DutyLog.started_at <= end)
-            .group_by(DutyLog.user_id, DutyLog.username)
+            .group_by(DutyLog.user_id)
             .order_by(func.sum(DutyLog.duration_minutes).desc())
         )
         rank_rows = rank_result.all()
+
+        from utils.ranking_utils import resolve_display_names
+        _rank_uids = [r.user_id for r in rank_rows]
+        _name_map = await resolve_display_names(
+            session, guild_id=guild_id, user_ids=_rank_uids, start=start, end=end,
+        )
+
         import pandas as pd
         df = pd.DataFrame([
             {
                 "Thứ hạng": i + 1,
                 "Discord User ID": r.user_id,
-                "Tên hiển thị": r.username,
+                "Tên hiển thị": _name_map.get(r.user_id) or "—",
                 "Tổng phút": r.total_minutes,
                 "Tổng giờ (thập phân)": round(r.total_minutes / 60, 2),
                 "Tổng giờ (h/m)": minutes_to_hhmm(r.total_minutes),
