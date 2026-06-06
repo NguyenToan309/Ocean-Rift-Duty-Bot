@@ -53,13 +53,13 @@ def get_period_range(
 
     if period == "day":
         start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_local = start_local + timedelta(days=1) - timedelta(seconds=1)
+        end_local = start_local + timedelta(days=1) - timedelta(microseconds=1)
 
     elif period == "week":
         # ISO week: Thứ 2 (weekday=0) → Chủ nhật (weekday=6)
         start_local = now - timedelta(days=now.weekday())
         start_local = start_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_local = start_local + timedelta(days=7) - timedelta(seconds=1)
+        end_local = start_local + timedelta(days=7) - timedelta(microseconds=1)
 
     elif period == "month":
         start_local = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -68,7 +68,7 @@ def get_period_range(
             next_month_start = start_local.replace(year=now.year + 1, month=1)
         else:
             next_month_start = start_local.replace(month=now.month + 1)
-        end_local = next_month_start - timedelta(seconds=1)
+        end_local = next_month_start - timedelta(microseconds=1)
 
     elif period == "quarter":
         quarter_start_month = ((now.month - 1) // 3) * 3 + 1
@@ -82,7 +82,7 @@ def get_period_range(
             next_quarter_start = start_local.replace(year=now.year + 1, month=1)
         else:
             next_quarter_start = start_local.replace(month=end_month + 1)
-        end_local = next_quarter_start - timedelta(seconds=1)
+        end_local = next_quarter_start - timedelta(microseconds=1)
 
     else:
         raise ValueError(f"Period không hợp lệ: {period}. Dùng: day|week|month|quarter|all")
@@ -107,8 +107,11 @@ def get_custom_range(
     except ValueError:
         raise ValueError("Định dạng ngày không hợp lệ. Dùng: DD/MM/YYYY")
 
-    start_local = tz.localize(start_local.replace(hour=0, minute=0, second=0))
-    end_local = tz.localize(end_local.replace(hour=23, minute=59, second=59))
+    start_local = tz.localize(start_local.replace(hour=0, minute=0, second=0, microsecond=0))
+    # 23:59:59.999999 thay vì 23:59:59.000000 để bao trùm trọn vẹn giây cuối ngày.
+    # Query thường dùng `started_at <= end` → log lúc 23:59:59.5 sẽ bị bỏ
+    # nếu end = 23:59:59.000000.
+    end_local = tz.localize(end_local.replace(hour=23, minute=59, second=59, microsecond=999999))
 
     if start_local > end_local:
         raise ValueError("Ngày bắt đầu phải trước ngày kết thúc")
@@ -137,9 +140,19 @@ def get_quarter_label(month: int) -> str:
 
 
 def format_datetime_vn(dt: datetime, tz_str: str | None = None) -> str:
-    """Format datetime sang chuỗi tiếng Việt: '14:30 Thứ 3, 27/04/2026'"""
+    """Format datetime sang chuỗi tiếng Việt: '14:30 Thứ 3, 27/04/2026'
+
+    Convention:
+    - Naive datetime → giả định ĐÃ ở target tz (parser output, local time)
+      → KHÔNG convert, format trực tiếp
+    - Aware datetime → convert qua to_local (DB output là UTC aware)
+    """
     weekdays = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
-    local_dt = to_local(dt, tz_str)
+    if dt.tzinfo is None:
+        # Naive: assume already in display tz (e.g. parser output từ LOG DUTY text)
+        local_dt = dt
+    else:
+        local_dt = to_local(dt, tz_str)
     day_name = weekdays[local_dt.weekday()]
     return f"{local_dt.strftime('%H:%M')} {day_name}, {local_dt.strftime('%d/%m/%Y')}"
 

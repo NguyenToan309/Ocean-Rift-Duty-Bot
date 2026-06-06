@@ -10,7 +10,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -18,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config import settings
 from web.middleware.rate_limit import limiter
-from web.routers import auth, dashboard, export, audit, schedule, leave, realtime
+from web.routers import auth, dashboard, export, audit, schedule, leave, realtime, staff, admin, setup as setup_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -64,11 +63,22 @@ _ALLOWED_ORIGINS_SET = {o.rstrip("/") for o in _cors_origins}
 
 @app.middleware("http")
 async def csrf_origin_guard(request: Request, call_next):
-    """Reject mutation requests có Origin không thuộc whitelist."""
+    """Reject mutation requests có Origin không thuộc whitelist.
+
+    Origin TRỐNG hoặc Origin SAI đều bị reject, kể cả khi DEBUG=true. Browser
+    luôn gửi Origin trên non-GET requests; request không có Origin là dấu hiệu
+    CSRF/script lạ. Dev khi dùng curl/httpie phải set:
+        -H "Origin: http://localhost:3000"
+    """
     if request.method not in _SAFE_METHODS:
         origin = request.headers.get("origin", "").rstrip("/")
-        # Cho phép request không có Origin (curl, server-to-server) chỉ trong DEBUG
-        if origin and origin not in _ALLOWED_ORIGINS_SET:
+        if not origin:
+            logger.warning(f"CSRF: blocked {request.method} {request.url.path} (no Origin header)")
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Thiếu Origin header", "detail": "CSRF protection"},
+            )
+        if origin not in _ALLOWED_ORIGINS_SET:
             logger.warning(f"CSRF: blocked {request.method} {request.url.path} from origin={origin}")
             return JSONResponse(
                 status_code=403,
@@ -116,27 +126,23 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
-# ----- Static files & Templates -----
-_static_dir = os.path.join(os.path.dirname(__file__), "static")
-_template_dir = os.path.join(os.path.dirname(__file__), "templates")
+# ----- Static files (React SPA build) -----
 # React build output (homie-medic-dashboard/dist) — sinh ra bởi `npm run build`.
+# Web KHÔNG còn fallback Jinja templates — phải build React trước khi chạy.
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _react_dist = os.path.join(_project_root, "homie-medic-dashboard", "dist")
 _react_available = os.path.isdir(_react_dist) and os.path.isfile(os.path.join(_react_dist, "index.html"))
 
-if os.path.isdir(_static_dir):
-    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
-
-# Mount asset chunks của React (Vite mặc định bỏ trong /assets/)
 if _react_available:
     _react_assets = os.path.join(_react_dist, "assets")
     if os.path.isdir(_react_assets):
         app.mount("/assets", StaticFiles(directory=_react_assets), name="react_assets")
     logger.info(f"[REACT] Serving SPA from {_react_dist}")
 else:
-    logger.info("[REACT] dist/ chưa build — fallback Jinja templates. Chạy `npm run build` trong homie-medic-dashboard/ để bật SPA.")
-
-templates = Jinja2Templates(directory=_template_dir)
+    logger.error(
+        "[REACT] dist/ KHÔNG TỒN TẠI. Chạy `cd homie-medic-dashboard && npm run build` "
+        "trước khi start web. Mọi request sẽ trả 500 cho đến khi build."
+    )
 
 # ----- Routers -----
 app.include_router(auth.router)
@@ -146,6 +152,10 @@ app.include_router(audit.router)
 app.include_router(schedule.router)
 app.include_router(leave.router)
 app.include_router(realtime.router)
+app.include_router(staff.router)
+app.include_router(admin.router)
+app.include_router(setup_router.router)
+app.include_router(setup_router.branding_router)
 
 
 # ----- Pages -----
@@ -167,21 +177,31 @@ def _serve_react_index(request: Request) -> FileResponse:
 async def index(request: Request):
     """
     Root. Nếu có cookie access_token hợp lệ → React SPA tự handle (gọi /api/dashboard/me).
-    Nếu cookie expired → xoá rồi serve index để user thấy login.
+    Nếu cookie expired, sai type, hoặc đã bị revoke (jti blacklist) → xoá cookie
+    rồi serve index để user thấy login.
     """
+    if not _react_available:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Web chưa được build. Liên hệ admin."},
+        )
+
     token = request.cookies.get("access_token")
     invalid_token = False
     if token and not request.query_params.get("require_2fa"):
+        # Dùng decode_token() để áp dụng cùng tập rule như API:
+        # check signature + exp + type=="access" + jti chưa bị blacklist.
+        # Tránh trường hợp cookie zombie (sau logout/2FA reset) vẫn hợp lệ
+        # về cryptography mà không bị xoá.
+        from models.base import AsyncSessionLocal
+        from web.routers.auth import decode_token
         try:
-            from jose import jwt
-            jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            async with AsyncSessionLocal() as session:
+                await decode_token(token, session, expected_type="access")
         except Exception:
             invalid_token = True
 
-    if _react_available:
-        response = _serve_react_index(request)
-    else:
-        response = templates.TemplateResponse("index.html", {"request": request})
+    response = _serve_react_index(request)
 
     if invalid_token:
         response.delete_cookie("access_token")
@@ -192,15 +212,49 @@ async def index(request: Request):
 
 @app.get("/dashboard")
 async def dashboard_page(request: Request):
-    if _react_available:
-        return _serve_react_index(request)
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    if not _react_available:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Web chưa được build. Liên hệ admin."},
+        )
+    return _serve_react_index(request)
 
 
 # ----- Health check (không yêu cầu auth) -----
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ----- SPA Catch-all -----
+# React Router dùng client-side routing. Khi user F5 ở /rankings, /staff, /settings...,
+# browser gửi GET tới FastAPI. FastAPI cần trả index.html để React Router xử lý URL.
+# CHỈ áp dụng cho route không bắt đầu bằng /api/, /auth/, /ws, /assets/, /static/.
+SPA_KNOWN_ROUTES = {
+    "login", "settings", "staff", "duty-logs", "schedule",
+    "leave-requests", "resign-requests", "rankings", "audit-log",
+    "403", "404", "500",
+}
+
+
+@app.get("/{full_path:path}")
+async def spa_catch_all(full_path: str, request: Request):
+    """Serve React SPA cho mọi route không match API/static. React Router lo phần còn lại."""
+    # Bỏ qua các prefix API/static — để FastAPI 404 đúng nghĩa
+    if full_path.startswith(("api/", "auth/", "ws", "assets/", "static/")):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Nếu có .ext (file thật) → 404 (không serve index cho file requests)
+    if "." in full_path.split("/")[-1] and not full_path.endswith(".html"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if _react_available:
+        return _serve_react_index(request)
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Web chưa được build. Liên hệ admin."},
+    )
 
 
 # ----- Global error handler -----

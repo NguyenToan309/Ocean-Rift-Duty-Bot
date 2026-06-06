@@ -47,6 +47,31 @@ class GuildConfig(Base):
     # Lưu dạng JSON vì số lượng role có thể thay đổi
     role_map: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
+    # Map chức vụ y tế → role hệ thống. Admin tự config trong Settings.
+    # VD: {"VIEN_TRUONG": "DUTY_ADMIN", "TRUONG_KHOA": "DUTY_MOD", "BAC_SI": "DUTY_MEMBER"}
+    # Bot có thể dùng để auto-cấp role Discord khi đổi chức vụ (optional, tuỳ admin enable).
+    position_role_map: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+
+    # Notification settings — admin toggle bật/tắt từ Settings.
+    # Default keys: {
+    #   "remind_register_shift": true,   # Nhắc đăng ký ca trực (onboarding)
+    #   "remind_before_shift": true,     # Nhắc trước giờ ca theo default_remind_offsets
+    #   "alert_late": true,              # Cảnh báo đi muộn
+    #   "alert_burnout": true,           # Cảnh báo vượt giờ tối đa/tuần
+    #   "daily_digest": false,           # Digest 8h sáng
+    # }
+    notification_settings: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=lambda: {
+            "remind_register_shift": True,
+            "remind_before_shift": True,
+            "alert_late": True,
+            "alert_burnout": True,
+            "daily_digest": False,
+        }
+    )
+
     # Timezone của guild (VD: "Asia/Ho_Chi_Minh")
     timezone: Mapped[str] = mapped_column(String(50), nullable=False, default="Asia/Ho_Chi_Minh")
 

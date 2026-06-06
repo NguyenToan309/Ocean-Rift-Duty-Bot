@@ -5,6 +5,7 @@ Index kép (guild_id, started_at) và (guild_id, user_id) để query thống k�
 from datetime import datetime
 from sqlalchemy import (
     BigInteger, String, Integer, DateTime, Text, Index, UniqueConstraint, ForeignKey,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base
@@ -36,8 +37,15 @@ class DutyLog(Base):
     # Nguồn dữ liệu: "ocr" | "forward" | "manual" | "message"
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="forward")
 
-    # Discord message ID gốc (để tránh duplicate auto-scan)
-    source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
+    # Format LOG DUTY v2 (CAPY TOWN LOGS) fields — nullable vì V1 cũ không có
+    # và V2 cũng có thể không có exit_reason (thoát bình thường).
+    discord_handle: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Discord message ID gốc (để tránh duplicate auto-scan).
+    # Unique constraint chuyển sang partial index (migration 009): chỉ
+    # enforce trên non-null. Xem __table_args__ bên dưới.
+    source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     # Người upload/xác nhận (admin có thể nhập thay)
     submitted_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -71,6 +79,14 @@ class DutyLog(Base):
         ),
         # Index hỗ trợ query compliance: filter logs theo schedule
         Index("ix_duty_logs_schedule", "schedule_id"),
+        # Partial unique index — chỉ enforce uniqueness khi source_message_id
+        # không null. NULL rows (manual log không gắn message) không tham gia.
+        Index(
+            "ix_duty_logs_source_msg_unique",
+            "source_message_id",
+            unique=True,
+            postgresql_where=text("source_message_id IS NOT NULL"),
+        ),
     )
 
     @property

@@ -20,6 +20,9 @@ class AuditAction:
     LOG_UPLOADED = "LOG_UPLOADED"
     LOG_DELETED = "LOG_DELETED"
     LOG_REJECTED = "LOG_REJECTED"
+    LOG_RENAMED = "LOG_RENAMED"   # Admin đổi tên (mass rename theo old_name)
+    LOG_REBIND = "LOG_REBIND"     # Admin đổi binding ingame_name của 1 user_id
+    LOG_WIPED = "LOG_WIPED"       # Bot owner xoá toàn bộ duty_logs của guild
     CHANGE_ROLE_CONFIG = "CHANGE_ROLE_CONFIG"
     CHANGE_CHANNEL_CONFIG = "CHANGE_CHANNEL_CONFIG"
     SETUP_GUILD = "SETUP_GUILD"
@@ -40,6 +43,16 @@ class AuditAction:
     ONBOARDING_REMINDED = "ONBOARDING_REMINDED"
     DISCIPLINE = "DISCIPLINE"        # /kyluat (cảnh cáo / khiển trách / phạt)
     DISMISSED = "DISMISSED"          # /sathai (sa thải ngay)
+    # Staff position management
+    STAFF_ADDED = "STAFF_ADDED"          # Thêm nhân sự vào hệ thống
+    STAFF_UPDATED = "STAFF_UPDATED"      # Đổi chức vụ/khoa/note
+    STAFF_REMOVED = "STAFF_REMOVED"      # Gỡ khỏi danh sách (deactivate)
+    STAFF_ROLE_SYNCED = "STAFF_ROLE_SYNCED"  # Auto-sync Discord role theo chức vụ
+    POSITION_ROLE_MAP_CHANGED = "POSITION_ROLE_MAP_CHANGED"  # Admin đổi config map
+    # Bot owner admin overview
+    ADMIN_OVERVIEW_VIEWED = "ADMIN_OVERVIEW_VIEWED"      # Owner xem trang /admin/overview
+    ADMIN_OVERVIEW_REFRESHED = "ADMIN_OVERVIEW_REFRESHED"  # Owner ấn refresh cache
+    SYSTEM_SETTINGS_UPDATED = "SYSTEM_SETTINGS_UPDATED"   # Owner đổi system_name / bot_activity_text
 
 
 class AuditLog(Base):

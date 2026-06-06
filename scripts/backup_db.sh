@@ -23,8 +23,15 @@ PGPASSWORD="$DB_PASSWORD" pg_dump \
     -U "$DB_USER" "$DB_NAME" \
     | gzip > "${BACKUP_DIR}/${FILENAME}"
 
-# Mã hoá bằng GPG symmetric (dùng HMAC_SECRET làm passphrase)
-echo "$HMAC_SECRET" | gpg --batch --yes --passphrase-fd 0 \
+# Mã hoá bằng GPG symmetric.
+# BACKUP_PASSPHRASE là biến độc lập với HMAC_SECRET — tách phạm vi
+# để compromise 1 secret không ảnh hưởng phạm vi còn lại.
+if [ -z "${BACKUP_PASSPHRASE:-}" ]; then
+    echo "[$(date)] LỖI: thiếu BACKUP_PASSPHRASE trong .env" >&2
+    echo "       Sinh bằng: python scripts/gen_secrets.py" >&2
+    exit 1
+fi
+echo "$BACKUP_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
     --symmetric --cipher-algo AES256 \
     --output "${BACKUP_DIR}/${ENCRYPTED}" \
     "${BACKUP_DIR}/${FILENAME}"

@@ -152,19 +152,28 @@ class DangKyModal(discord.ui.Modal, title="📅 Đăng ký lịch trực"):
 
         crosses_midnight = end_t <= start_t
 
-        # Lưu DB: 1 row per weekday. Nếu đã có row (uniq constraint) → ghi đè.
+        # Lưu DB: 1 row per weekday. Logic REPLACE:
+        # - Lấy TẤT CẢ entry active của user với SAME start_time (cùng "ca" này)
+        # - Ngày có trong input mới → update/keep
+        # - Ngày KHÔNG có trong input mới → DEACTIVATE (xóa khỏi lịch)
+        # - Ngày mới chưa có → tạo mới
+        # → User submit "ca 20:50-23:15: T2, T4, CN" mà DB đang có T2-CN
+        #   → T3, T5, T6, T7 sẽ bị deactivate
+        # → Các ca khung giờ KHÁC (vd 08:00-12:00) KHÔNG bị động đến.
         async with AsyncSessionLocal() as session:
             existing_rows = await session.execute(
                 select(MemberSchedule)
                 .where(MemberSchedule.guild_id == interaction.guild_id)
                 .where(MemberSchedule.user_id == interaction.user.id)
-                .where(MemberSchedule.weekday.in_(weekdays))
                 .where(MemberSchedule.start_time == start_t)
+                .where(MemberSchedule.is_active == True)  # noqa: E712
             )
             existing_map = {s.weekday: s for s in existing_rows.scalars().all()}
 
             updated: list[int] = []
             created: list[int] = []
+            removed: list[int] = []
+            new_weekdays_set = set(weekdays)
             for wd in weekdays:
                 if wd in existing_map:
                     s = existing_map[wd]
@@ -188,17 +197,25 @@ class DangKyModal(discord.ui.Modal, title="📅 Đăng ký lịch trực"):
                     session.add(new_s)
                     created.append(wd)
 
+            # Deactivate các ngày cũ KHÔNG còn trong input mới
+            for wd, s in existing_map.items():
+                if wd not in new_weekdays_set:
+                    s.is_active = False
+                    s.updated_at = utcnow()
+                    removed.append(wd)
+
             session.add(AuditLog(
                 guild_id=interaction.guild_id,
                 user_id=interaction.user.id,
                 username=str(interaction.user),
-                action=(AuditAction.SCHEDULE_UPDATED if updated else AuditAction.SCHEDULE_CREATED),
+                action=(AuditAction.SCHEDULE_UPDATED if (updated or removed) else AuditAction.SCHEDULE_CREATED),
                 detail={
                     "start": str(start_t),
                     "end": str(end_t),
                     "crosses_midnight": crosses_midnight,
                     "created_weekdays": created,
                     "updated_weekdays": updated,
+                    "removed_weekdays": removed,
                 },
                 created_at=utcnow(),
             ))
@@ -229,25 +246,29 @@ class DangKyModal(discord.ui.Modal, title="📅 Đăng ký lịch trực"):
         )
         embed.add_field(name="🕐 Khung giờ", value=f"`{time_str}`", inline=True)
         embed.add_field(name="📆 Thứ trực", value=f"**{wd_str}**", inline=True)
-        if updated and created:
-            embed.add_field(
-                name="📝 Trạng thái",
-                value=f"✏️ Cập nhật {len(updated)} ngày  •  ➕ Tạo mới {len(created)} ngày",
-                inline=False,
-            )
-        elif updated:
-            embed.add_field(name="📝 Trạng thái", value="✏️ Đã cập nhật lịch cũ", inline=False)
-        else:
-            embed.add_field(name="📝 Trạng thái", value="➕ Tạo mới", inline=False)
+
+        status_lines = []
+        if created:
+            status_lines.append(f"➕ Tạo mới {len(created)} ngày: {', '.join(WEEKDAY_SHORT[w] for w in created)}")
+        if updated:
+            status_lines.append(f"✏️ Cập nhật {len(updated)} ngày: {', '.join(WEEKDAY_SHORT[w] for w in updated)}")
+        if removed:
+            status_lines.append(f"🗑️ Gỡ {len(removed)} ngày cũ: {', '.join(WEEKDAY_SHORT[w] for w in removed)}")
+        if not status_lines:
+            status_lines.append("➕ Tạo mới")
+        embed.add_field(name="📝 Trạng thái", value="\n".join(status_lines), inline=False)
 
         embed.set_footer(text="Bot sẽ tự động nhắc bạn trước mỗi ca trực • /lich nhac để chỉnh mốc nhắc")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # Notify staff channel nếu là UPDATE (sửa lịch)
-        if updated:
+        # Notify staff channel nếu là UPDATE (sửa lịch) hoặc có gỡ
+        if updated or removed:
             await self.cog._notify_staff_schedule_change(
                 interaction, "✏️ Sửa lịch trực",
-                updated_weekdays=updated, time_str=time_str, weekdays=weekdays,
+                updated_weekdays=updated,
+                time_str=time_str,
+                weekdays=weekdays,
+                removed_weekdays=removed,
             )
 
 
@@ -551,6 +572,7 @@ class ScheduleCog(commands.Cog):
         updated_weekdays: list[int],
         time_str: str,
         weekdays: list[int],
+        removed_weekdays: list[int] | None = None,
     ):
         """Gửi embed sang staff channel để admin/mod biết có sửa lịch"""
         async with AsyncSessionLocal() as session:
@@ -561,7 +583,7 @@ class ScheduleCog(commands.Cog):
         if not ch:
             return
 
-        wd_str = ", ".join(WEEKDAY_SHORT[w] for w in weekdays)
+        wd_str = ", ".join(WEEKDAY_SHORT[w] for w in weekdays) if weekdays else "(không có)"
         embed = discord.Embed(
             title=title,
             description=(
@@ -572,7 +594,14 @@ class ScheduleCog(commands.Cog):
         )
         embed.add_field(name="👤 Member", value=interaction.user.mention, inline=True)
         embed.add_field(name="🕐 Khung giờ", value=f"`{time_str}`", inline=True)
-        embed.add_field(name="📆 Ngày", value=f"**{wd_str}**", inline=True)
+        embed.add_field(name="📆 Ngày hiện tại", value=f"**{wd_str}**", inline=True)
+        if removed_weekdays:
+            removed_str = ", ".join(WEEKDAY_SHORT[w] for w in removed_weekdays)
+            embed.add_field(
+                name="🗑️ Đã gỡ ngày",
+                value=f"~~{removed_str}~~",
+                inline=False,
+            )
         embed.set_footer(text=f"Cập nhật lúc {utcnow().strftime('%H:%M %d/%m/%Y')} UTC")
         try:
             await ch.send(embed=embed)

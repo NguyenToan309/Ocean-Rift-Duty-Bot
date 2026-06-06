@@ -21,6 +21,11 @@ print(f"FERNET_KEY={fernet_key}")
 hmac_secret = secrets.token_hex(32)
 print(f"HMAC_SECRET={hmac_secret}")
 
+# Backup passphrase: TÁCH RIÊNG khỏi HMAC_SECRET để compromise 1 phạm vi
+# không ảnh hưởng phạm vi còn lại (xem scripts/backup_db.sh).
+backup_passphrase = secrets.token_urlsafe(32)
+print(f"BACKUP_PASSPHRASE={backup_passphrase}")
+
 redis_pass = secrets.token_urlsafe(24)
 print(f"REDIS_PASSWORD={redis_pass}")
 

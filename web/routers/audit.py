@@ -13,6 +13,7 @@ from models.base import get_db
 from models.audit_log import AuditLog
 from web.middleware.auth_guard import require_auth, require_guild_role
 from web.middleware.rate_limit import limiter
+from web.utils.discord_resolver import enrich_audit_details
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/audit", tags=["audit"])
@@ -56,20 +57,30 @@ async def get_audit_logs(
         count_query = count_query.where(AuditLog.action == action)
     total = (await session.execute(count_query)).scalar() or 0
 
+    items = [
+        {
+            "id": log.id,
+            "user_id": log.user_id,
+            "username": log.username,
+            "action": log.action,
+            "detail": log.detail,
+            "ip_address": log.ip_address,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        }
+        for log in logs
+    ]
+
+    # Server-side enrich: resolve user_id/channel_id/role_id → tên (TTL cache 10 phút)
+    try:
+        resolved = await enrich_audit_details(guild_id, items)
+    except Exception as e:
+        logger.warning(f"audit enrich failed: {e}")
+        resolved = {}
+
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [
-            {
-                "id": log.id,
-                "user_id": log.user_id,
-                "username": log.username,
-                "action": log.action,
-                "detail": log.detail,
-                "ip_address": log.ip_address,
-                "created_at": log.created_at.isoformat() if log.created_at else None,
-            }
-            for log in logs
-        ],
+        "items": items,
+        "resolved": resolved,    # {id_str: {type, name}}
     }

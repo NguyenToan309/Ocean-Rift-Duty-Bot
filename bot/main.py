@@ -35,6 +35,7 @@ COGS = [
     "bot.cogs.leave",
     "bot.cogs.discipline",
     "bot.cogs.control_panel",
+    "bot.cogs.staff",
 ]
 
 
@@ -78,23 +79,88 @@ class DutyBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Lỗi load cog {cog}: {e}", exc_info=True)
 
-        # Sync slash commands toàn cầu (discord.py 2.x)
-        synced = await self.tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands")
+        # Sync slash commands.
+        # Discord global sync mất tới 1h propagate → chậm khi dev.
+        # Nếu env DISCORD_DEV_GUILD_ID hoặc DISCORD_TEST_GUILD_ID set →
+        # copy global commands sang guild đó + sync ngay (instant, hiện liền).
+        # Production: bỏ env này, dùng global sync.
+        dev_guild_id = os.getenv("DISCORD_DEV_GUILD_ID") or os.getenv("DISCORD_TEST_GUILD_ID")
+        if dev_guild_id and dev_guild_id.isdigit():
+            guild_obj = discord.Object(id=int(dev_guild_id))
+            self.tree.copy_global_to(guild=guild_obj)
+            try:
+                synced = await self.tree.sync(guild=guild_obj)
+                logger.info(
+                    f"[dev-mode] Synced {len(synced)} slash commands "
+                    f"to guild {dev_guild_id} (instant)."
+                )
+            except Exception as e:
+                logger.error(f"Sync per-guild failed: {e}", exc_info=True)
+        else:
+            try:
+                synced = await self.tree.sync()
+                logger.info(
+                    f"Synced {len(synced)} slash commands globally. "
+                    "Lưu ý: global sync có thể mất tới 1 giờ để Discord propagate."
+                )
+            except Exception as e:
+                logger.error(f"Global sync failed: {e}", exc_info=True)
 
         # Khởi động background tasks (nhắc trực, EOD check, onboarding scan)
         from bot.tasks.schedule_tasks import start_background_tasks
         start_background_tasks(self)
 
     async def on_ready(self):
-        logger.info(f"Homie Medic đã online: {self.user} (ID: {self.user.id})")
+        logger.info(f"Bot đã online: {self.user} (ID: {self.user.id})")
         logger.info(f"Đang phục vụ {len(self.guilds)} guild(s)")
+        # Set presence ngay từ DB (fallback default nếu chưa migrate hoặc DB lỗi)
+        await self._refresh_presence_from_db()
+        # Khởi động loop poll mỗi 60s để áp dụng thay đổi từ web admin
+        if not getattr(self, "_presence_task_started", False):
+            self._presence_task_started = True
+            self.loop.create_task(self._presence_poll_loop())
+
+    async def _refresh_presence_from_db(self) -> None:
+        """Đọc system_settings.bot_activity_text từ DB → change_presence.
+
+        Fallback DEFAULTS nếu DB lỗi (vd: chưa migrate) — không để bot crash
+        vì lý do branding.
+        """
+        from sqlalchemy import select
+        from models.base import AsyncSessionLocal
+        from models.system_setting import SystemSetting, DEFAULTS as SYS_DEFAULTS
+        text = SYS_DEFAULTS["bot_activity_text"]
+        try:
+            async with AsyncSessionLocal() as session:
+                row = await session.execute(
+                    select(SystemSetting).where(SystemSetting.key == "bot_activity_text")
+                )
+                s = row.scalar_one_or_none()
+                if s and s.value:
+                    text = s.value
+        except Exception as e:
+            logger.warning(f"Không đọc được bot_activity_text từ DB ({e!r}), dùng default.")
+        # Lưu cache để loop biết khi nào cần update
+        if getattr(self, "_current_activity_text", None) == text:
+            return
+        self._current_activity_text = text
         await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="Homie Medic | /log upload"
-            )
+            activity=discord.Activity(type=discord.ActivityType.watching, name=text)
         )
+
+    async def _presence_poll_loop(self) -> None:
+        """Poll system_settings mỗi 60s, áp dụng khi bot_activity_text đổi.
+
+        Loop chạy vĩnh viễn đến khi bot disconnect. Try/except mỗi iteration
+        để 1 lỗi mạng không kill loop.
+        """
+        import asyncio
+        while not self.is_closed():
+            await asyncio.sleep(60)
+            try:
+                await self._refresh_presence_from_db()
+            except Exception as e:
+                logger.debug(f"Presence poll iteration lỗi: {e!r}")
 
     async def on_guild_join(self, guild: discord.Guild):
         """Ghi log khi bot được thêm vào guild mới"""

@@ -3,7 +3,7 @@ dashboard.py — API trả dữ liệu cho web dashboard
 Tất cả endpoint yêu cầu xác thực JWT
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +28,16 @@ async def get_me(
     request: Request,
     current_user: dict = Depends(require_auth),
 ):
-    """Trả về user info từ JWT — dùng cho frontend hiển thị + check ownership"""
+    """Trả về user info từ JWT — dùng cho frontend hiển thị + check ownership.
+
+    Field `is_bot_owner` cho frontend biết user có quyền vào /admin/* không
+    để hiển thị/ẩn link "Admin" trong navigation.
+    """
+    from web.middleware.auth_guard import is_bot_owner
     return {
         "user_id": str(current_user.get("sub")),
         "username": current_user.get("username", ""),
+        "is_bot_owner": is_bot_owner(current_user),
     }
 
 
@@ -134,20 +140,51 @@ async def get_overview(
     )
     row = totals.first()
 
-    # Top 5
+    # Top 5 — group by user_id only để gộp các log của cùng 1 discord user
+    # (cùng owner có thể có nhiều tên ingame khác nhau).
     top5 = await session.execute(
         select(
-            DutyLog.username,
+            DutyLog.user_id,
             func.sum(DutyLog.duration_minutes).label("total_minutes"),
             func.count(DutyLog.id).label("sessions"),
         )
         .where(DutyLog.guild_id == guild_id)
         .where(DutyLog.started_at >= start)
         .where(DutyLog.started_at <= end)
-        .group_by(DutyLog.user_id, DutyLog.username)
+        .group_by(DutyLog.user_id)
         .order_by(func.sum(DutyLog.duration_minutes).desc())
         .limit(5)
     )
+    top5_rows = list(top5.all())
+
+    # Resolve display name từ binding (current_ingame_name) hoặc log gần nhất
+    _top5_uids = {r.user_id for r in top5_rows if r.user_id}
+    from models.duty_identity_binding import DutyIdentityBinding
+    _binding_map: dict[int, str] = {}
+    _latest_name_map: dict[int, str] = {}
+    if _top5_uids:
+        b_rows = await session.execute(
+            select(DutyIdentityBinding.discord_user_id, DutyIdentityBinding.current_ingame_name)
+            .where(DutyIdentityBinding.guild_id == guild_id)
+            .where(DutyIdentityBinding.discord_user_id.in_(_top5_uids))
+        )
+        _binding_map = {b.discord_user_id: b.current_ingame_name for b in b_rows.all()}
+        # Fallback: tên gần nhất trong period
+        n_rows = await session.execute(
+            select(DutyLog.user_id, DutyLog.username)
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id.in_(_top5_uids))
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+            .order_by(DutyLog.user_id, DutyLog.started_at.desc())
+        )
+        for r in n_rows.all():
+            if r.user_id not in _latest_name_map:
+                _latest_name_map[r.user_id] = r.username
+
+    # Batch resolve Discord avatars cho top5
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _top5_info = await batch_resolve_user_info(_top5_uids) if _top5_uids else {}
 
     return {
         "total_sessions": row.total_sessions,
@@ -156,12 +193,14 @@ async def get_overview(
         "total_hhmm": minutes_to_hhmm(row.total_minutes),
         "top5": [
             {
-                "username": r.username,
+                "user_id": str(r.user_id) if r.user_id else None,
+                "username": _binding_map.get(r.user_id) or _latest_name_map.get(r.user_id) or "—",
+                "avatar_url": (_top5_info.get(r.user_id) or {}).get("avatar_url"),
                 "total_minutes": r.total_minutes,
                 "total_hhmm": minutes_to_hhmm(r.total_minutes),
                 "sessions": r.sessions,
             }
-            for r in top5.all()
+            for r in top5_rows
         ],
     }
 
@@ -338,6 +377,22 @@ async def get_attendance_dashboard(
     total_sessions = sum(it["session_count"] for it in items)
     total_minutes = sum(it["total_minutes"] for it in items)
     active_members = sum(1 for it in items if it["session_count"] > 0)
+
+    # Batch resolve Discord avatars cho mọi user trong attendance
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _att_uids: set[int] = set()
+    for it in items:
+        try:
+            _att_uids.add(int(it["user_id"]))
+        except (TypeError, ValueError):
+            pass
+    _att_info = await batch_resolve_user_info(_att_uids) if _att_uids else {}
+    for it in items:
+        try:
+            uid_int = int(it["user_id"])
+            it["avatar_url"] = (_att_info.get(uid_int) or {}).get("avatar_url")
+        except (TypeError, ValueError):
+            it["avatar_url"] = None
 
     return {
         "is_mod_view": is_mod,
@@ -624,21 +679,74 @@ async def get_ranking(
     direction = func.sum(DutyLog.duration_minutes).desc() if order == "desc" else func.sum(DutyLog.duration_minutes).asc()
 
     offset = (page - 1) * page_size
+    # Gộp theo discord_user_id duy nhất — cùng 1 user có thể có nhiều
+    # tên ingame khác nhau (vd "Báo Lê (CP890743)" vs "Báo Lê (Báo Lê Văm)")
+    # do đổi character/Steam name. Không group theo username để các log
+    # cùng owner được cộng dồn vào 1 row.
+    # username hiển thị: lấy của log gần nhất nhất (MAX(started_at)) qua subquery
+    # rồi override bằng DutyIdentityBinding.current_ingame_name nếu có.
     result = await session.execute(
         select(
             DutyLog.user_id,
-            DutyLog.username,
             func.sum(DutyLog.duration_minutes).label("total_minutes"),
             func.count(DutyLog.id).label("sessions"),
+            func.max(DutyLog.started_at).label("last_log_at"),
         )
         .where(DutyLog.guild_id == guild_id)
         .where(DutyLog.started_at >= start)
         .where(DutyLog.started_at <= end)
-        .group_by(DutyLog.user_id, DutyLog.username)
+        .group_by(DutyLog.user_id)
         .order_by(direction)
         .offset(offset)
         .limit(page_size)
     )
+
+    rows = list(result.all())
+    user_ids_in_page = [r.user_id for r in rows if r.user_id is not None]
+
+    # Lấy username gần nhất cho mỗi user (fallback nếu không có binding)
+    latest_username_map: dict[int, str] = {}
+    if user_ids_in_page:
+        # Subquery: với mỗi user_id, lấy username của log có started_at lớn nhất
+        from sqlalchemy import and_
+        sub = (
+            select(DutyLog.user_id, DutyLog.username, DutyLog.started_at)
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id.in_(user_ids_in_page))
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+            .subquery()
+        )
+        # Lấy row có (user_id, started_at) khớp với MAX
+        max_rows = (await session.execute(
+            select(DutyLog.user_id, DutyLog.username, DutyLog.started_at)
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id.in_(user_ids_in_page))
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+            .order_by(DutyLog.user_id, DutyLog.started_at.desc())
+        )).all()
+        for r in max_rows:
+            if r.user_id not in latest_username_map:
+                latest_username_map[r.user_id] = r.username
+
+    # Override bằng binding nếu có (current_ingame_name là tên chính thức)
+    from models.duty_identity_binding import DutyIdentityBinding
+    binding_rows = await session.execute(
+        select(DutyIdentityBinding.discord_user_id, DutyIdentityBinding.current_ingame_name)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .where(DutyIdentityBinding.discord_user_id.in_(user_ids_in_page))
+    ) if user_ids_in_page else None
+    binding_map = {b.discord_user_id: b.current_ingame_name for b in (binding_rows.all() if binding_rows else [])}
+
+    # Batch resolve Discord avatars
+    from web.utils.discord_resolver import batch_resolve_user_info
+    info_map = await batch_resolve_user_info(set(user_ids_in_page)) if user_ids_in_page else {}
+
+    def _display_name(uid: int | None) -> str:
+        if uid is None:
+            return "—"
+        return binding_map.get(uid) or latest_username_map.get(uid) or "—"
 
     return {
         "page": page,
@@ -646,13 +754,14 @@ async def get_ranking(
         "items": [
             {
                 "rank": offset + i + 1,
-                "user_id": r.user_id,
-                "username": r.username,
+                "user_id": str(r.user_id) if r.user_id else None,
+                "username": _display_name(r.user_id),
+                "avatar_url": (info_map.get(r.user_id) or {}).get("avatar_url"),
                 "total_minutes": r.total_minutes,
                 "total_hhmm": minutes_to_hhmm(r.total_minutes),
                 "sessions": r.sessions,
             }
-            for i, r in enumerate(result.all())
+            for i, r in enumerate(rows)
         ],
     }
 
@@ -775,7 +884,12 @@ async def list_logs(
     rows = await session.execute(
         base_q.order_by(DutyLog.started_at.desc()).offset(offset).limit(page_size)
     )
-    logs = rows.scalars().all()
+    logs = list(rows.scalars().all())
+
+    # Batch resolve avatars cho duty logs
+    from web.utils.discord_resolver import batch_resolve_user_info
+    _log_uids = {log.user_id for log in logs if log.user_id}
+    _log_info = await batch_resolve_user_info(_log_uids) if _log_uids else {}
 
     return {
         "total": total,
@@ -786,6 +900,7 @@ async def list_logs(
                 "id": log.id,
                 "user_id": log.user_id,
                 "username": log.username,
+                "avatar_url": (_log_info.get(log.user_id) or {}).get("avatar_url"),
                 "started_at": log.started_at.isoformat() if log.started_at else None,
                 "ended_at": log.ended_at.isoformat() if log.ended_at else None,
                 "duration_minutes": log.duration_minutes,
@@ -799,20 +914,277 @@ async def list_logs(
     }
 
 
+@router.post("/logs/rebind")
+@limiter.limit("10/minute")
+async def rebind_user(
+    request: Request,
+    payload: dict,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Đổi current_ingame_name trong binding của 1 user.
+
+    Body: {guild_id, target_user_id, new_ingame_name, note}
+    KHÔNG đổi username trong duty_logs cũ — chỉ binding.
+    Quyền: DUTY_ADMIN. Phân biệt hoa thường.
+    """
+    from models.duty_identity_binding import DutyIdentityBinding
+
+    try:
+        guild_id = int(payload.get("guild_id") or 0)
+        target_user_id = int(payload.get("target_user_id") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="guild_id và target_user_id phải là số")
+    new_name = (payload.get("new_ingame_name") or "").strip() if isinstance(payload.get("new_ingame_name"), str) else ""
+    note = (payload.get("note") or "").strip() if isinstance(payload.get("note"), str) else ""
+
+    if guild_id <= 0 or target_user_id <= 0:
+        raise HTTPException(status_code=400, detail="guild_id và target_user_id không hợp lệ")
+    if not new_name:
+        raise HTTPException(status_code=400, detail="new_ingame_name không được rỗng")
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Lý do tối thiểu 3 ký tự")
+    if len(new_name) > 100:
+        raise HTTPException(status_code=400, detail="Tên mới quá dài (tối đa 100 ký tự)")
+
+    user_id = int(current_user["sub"])
+    username = current_user.get("username", f"user_{user_id}")
+
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+
+    row = await session.execute(
+        select(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .where(DutyIdentityBinding.discord_user_id == target_user_id)
+    )
+    binding = row.scalar_one_or_none()
+    if binding is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User {target_user_id} chưa có binding (chưa từng chấm công).",
+        )
+
+    old_name = binding.current_ingame_name
+    if old_name == new_name:
+        raise HTTPException(status_code=400, detail="Tên mới giống tên hiện tại")
+
+    # Conflict check
+    conflict_row = await session.execute(
+        select(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .where(DutyIdentityBinding.current_ingame_name == new_name)
+        .where(DutyIdentityBinding.discord_user_id != target_user_id)
+    )
+    conflict = conflict_row.scalar_one_or_none()
+    if conflict is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tên '{new_name}' đã thuộc user khác (ID {conflict.discord_user_id})",
+        )
+
+    history = list(binding.rebind_history or [])
+    history.append({
+        "from": old_name,
+        "to": new_name,
+        "by": str(user_id),
+        "by_name": username,
+        "at": utcnow().isoformat(),
+        "reason": note,
+        "via": "web",
+    })
+    binding.current_ingame_name = new_name
+    binding.rebind_count = (binding.rebind_count or 0) + 1
+    binding.rebind_history = history
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=user_id,
+        username=username,
+        action=AuditAction.LOG_REBIND,
+        detail={
+            "target_user_id": str(target_user_id),
+            "original_ingame_name": binding.original_ingame_name,
+            "from": old_name,
+            "to": new_name,
+            "reason": note,
+            "via": "web",
+        },
+        ip_address=request.client.host if request.client else None,
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {
+        "success": True,
+        "original_ingame_name": binding.original_ingame_name,
+        "old_name": old_name,
+        "new_name": new_name,
+    }
+
+
+@router.get("/logs/bindings")
+@limiter.limit("30/minute")
+async def list_bindings(
+    request: Request,
+    guild_id: int = Query(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Liệt kê tất cả binding trong guild (cho UI admin xem/so sánh).
+
+    Trả: list[{discord_user_id, original_ingame_name, current_ingame_name,
+    rebind_count, log_count, first_seen_at, last_seen_at, history[]}]
+    Quyền: DUTY_MEMBER trở lên (member tự xem được).
+    """
+    from models.duty_identity_binding import DutyIdentityBinding
+    await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
+
+    rows = await session.execute(
+        select(DutyIdentityBinding)
+        .where(DutyIdentityBinding.guild_id == guild_id)
+        .order_by(DutyIdentityBinding.last_seen_at.desc())
+    )
+    items = []
+    for b in rows.scalars().all():
+        items.append({
+            "discord_user_id": str(b.discord_user_id),
+            "original_ingame_name": b.original_ingame_name,
+            "current_ingame_name": b.current_ingame_name,
+            "is_renamed": b.original_ingame_name != b.current_ingame_name,
+            "rebind_count": b.rebind_count or 0,
+            "log_count": b.log_count or 0,
+            "first_seen_at": b.first_seen_at.isoformat() if b.first_seen_at else None,
+            "last_seen_at": b.last_seen_at.isoformat() if b.last_seen_at else None,
+            "history": list(b.rebind_history or []),
+        })
+    return {"items": items}
+
+
+@router.post("/logs/rename")
+@limiter.limit("10/minute")
+async def rename_logs(
+    request: Request,
+    payload: dict,
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Mass-rename log: đổi username tất cả log của 1 tên cũ → tên mới trong
+    1 guild. Use case: user đổi tên character → đồng bộ lại log cũ.
+
+    Body: {guild_id: int, old_name: str, new_name: str, note: str}
+
+    Quyền: DUTY_ADMIN. Trả {affected_logs, affected_user_ids[]}.
+
+    Chặn conflict: nếu tên mới đã thuộc về user_id khác (theo username lock)
+    → 409 Conflict; admin phải xử lý owner cũ trước khi rename.
+    """
+    guild_id_raw = payload.get("guild_id")
+    old_name_raw = payload.get("old_name")
+    new_name_raw = payload.get("new_name")
+    note_raw = payload.get("note")
+
+    if not isinstance(guild_id_raw, int) and not (isinstance(guild_id_raw, str) and guild_id_raw.isdigit()):
+        raise HTTPException(status_code=400, detail="guild_id không hợp lệ")
+    guild_id = int(guild_id_raw)
+
+    old_name = (old_name_raw or "").strip() if isinstance(old_name_raw, str) else ""
+    new_name = (new_name_raw or "").strip() if isinstance(new_name_raw, str) else ""
+    note = (note_raw or "").strip() if isinstance(note_raw, str) else ""
+
+    if not old_name or not new_name:
+        raise HTTPException(status_code=400, detail="old_name và new_name không được rỗng")
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Phải ghi lý do tối thiểu 3 ký tự (note)")
+    if old_name.lower() == new_name.lower():
+        raise HTTPException(status_code=400, detail="Tên cũ và tên mới giống nhau (case-insensitive)")
+    if len(new_name) > 100:
+        raise HTTPException(status_code=400, detail="Tên mới quá dài (tối đa 100 ký tự)")
+
+    user_id = int(current_user["sub"])
+    username = current_user.get("username", f"user_{user_id}")
+
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+
+    # Tìm log khớp tên cũ
+    matched = await session.execute(
+        select(DutyLog)
+        .where(DutyLog.guild_id == guild_id)
+        .where(func.lower(func.trim(DutyLog.username)) == old_name.lower())
+    )
+    logs = list(matched.scalars().all())
+    if not logs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Không có log nào của '{old_name}' trong guild này.",
+        )
+
+    # Verify tên mới chưa thuộc user_id khác
+    current_owner_id = logs[0].user_id
+    new_owner_row = await session.execute(
+        select(DutyLog.user_id)
+        .where(DutyLog.guild_id == guild_id)
+        .where(func.lower(func.trim(DutyLog.username)) == new_name.lower())
+        .limit(1)
+    )
+    new_owner_id = new_owner_row.scalar_one_or_none()
+    if new_owner_id is not None and new_owner_id != current_owner_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tên mới '{new_name}' đã thuộc user khác (ID {new_owner_id}). "
+                   "Xử lý owner cũ trước khi rename.",
+        )
+
+    affected_user_ids = sorted({l.user_id for l in logs})
+    affected_count = len(logs)
+    for log in logs:
+        log.username = new_name
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=user_id,
+        username=username,
+        action=AuditAction.LOG_RENAMED,
+        detail={
+            "old_name": old_name,
+            "new_name": new_name,
+            "affected_logs": affected_count,
+            "affected_user_ids": [str(u) for u in affected_user_ids],
+            "note": note,
+            "via": "web",
+        },
+        ip_address=request.client.host if request.client else None,
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {
+        "success": True,
+        "affected_logs": affected_count,
+        "affected_user_ids": [str(u) for u in affected_user_ids],
+    }
+
+
 @router.delete("/logs/{log_id}")
 @limiter.limit("30/minute")
 async def delete_log(
     request: Request,
     log_id: int = Path(..., gt=0),
     guild_id: int = Query(...),
+    note: str = Query(..., min_length=3, description="Lý do xoá (BẮT BUỘC, ≥3 ký tự)"),
     session: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
     """
     Xóa 1 duty log. Quyền: CHỈ DUTY_ADMIN (không có ngoại lệ — kể cả MOD và chủ log).
-    Ghi audit log với chi tiết entry bị xóa.
+    Audit policy nghiêm ngặt: MỌI lệnh xoá đều phải kèm lý do.
     """
     user_id = int(current_user["sub"])
+    note_clean = (note or "").strip()
+    if len(note_clean) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Xoá log phải ghi LÝ DO (tối thiểu 3 ký tự, query param 'note').",
+        )
 
     # Quyền ADMIN check TRƯỚC khi query — fail fast
     await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
@@ -828,7 +1200,7 @@ async def delete_log(
     # Snapshot trước khi xóa để ghi audit
     snapshot = {
         "log_id": log.id,
-        "for_user_id": log.user_id,
+        "for_user": str(log.user_id),
         "for_username": log.username,
         "started_at": log.started_at.isoformat() if log.started_at else None,
         "ended_at": log.ended_at.isoformat() if log.ended_at else None,
@@ -836,19 +1208,154 @@ async def delete_log(
         "source": log.source,
     }
 
-    # Xóa
-    await session.execute(delete(DutyLog).where(DutyLog.id == log_id))
+    # Xóa — verify rowcount để bắt race condition (log bị xoá bởi tiến trình
+    # khác giữa lúc query select ở trên và delete ở đây). Tránh ghi audit log
+    # giả "đã xoá X" khi thực ra delete no-op.
+    delete_result = await session.execute(delete(DutyLog).where(DutyLog.id == log_id))
+    if delete_result.rowcount == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="Log đã bị xoá bởi tiến trình khác giữa lúc kiểm tra và xoá. Vui lòng tải lại trang.",
+        )
 
-    # Audit log — username người thực hiện lấy từ JWT (sub) — không lưu trong JWT, ta dùng "web_user"
     session.add(AuditLog(
         guild_id=guild_id,
         user_id=user_id,
         username=current_user.get("username", f"user_{user_id}"),
         action=AuditAction.LOG_DELETED,
-        detail=snapshot,
+        detail={**snapshot, "note": note_clean, "via": "web"},
         ip_address=request.client.host if request.client else None,
         created_at=utcnow(),
     ))
     await session.commit()
 
     return {"success": True, "deleted_id": log_id}
+
+
+# ─── Notification Settings ────────────────────────────────────────────────────
+
+DEFAULT_NOTIFY = {
+    "remind_register_shift": True,
+    "remind_before_shift": True,
+    "alert_late": True,
+    "alert_burnout": True,
+    "daily_digest": False,
+}
+
+
+@router.get("/notification-settings")
+@limiter.limit("30/minute")
+async def get_notification_settings(
+    request: Request,
+    guild_id: int = Query(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """Lấy cấu hình bật/tắt các loại nhắc nhở. Mod+ xem được."""
+    await require_guild_role(guild_id, "DUTY_MOD", current_user, session)
+    row = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == guild_id))
+    config = row.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Guild chưa setup")
+    settings_obj = {**DEFAULT_NOTIFY, **(config.notification_settings or {})}
+    return {"notification_settings": settings_obj}
+
+
+@router.put("/notification-settings")
+@limiter.limit("10/minute")
+async def update_notification_settings(
+    request: Request,
+    guild_id: int = Query(...),
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Cập nhật cấu hình thông báo (Admin). Body:
+      {"settings": {...}, "note": "Lý do (≥3 chars)"}
+    """
+    await require_guild_role(guild_id, "DUTY_ADMIN", current_user, session)
+    note = (body.get("note") or "").strip()
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="Bắt buộc lý do thay đổi (≥3 ký tự).")
+
+    new_settings = body.get("settings") or {}
+    if not isinstance(new_settings, dict):
+        raise HTTPException(status_code=400, detail="Field 'settings' phải là object.")
+
+    # Validate keys: chỉ accept các key trong DEFAULT_NOTIFY
+    clean: dict[str, bool] = {}
+    for k, v in new_settings.items():
+        if k in DEFAULT_NOTIFY:
+            clean[k] = bool(v)
+
+    row = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == guild_id))
+    config = row.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Guild chưa setup")
+
+    before = {**DEFAULT_NOTIFY, **(config.notification_settings or {})}
+    merged = {**before, **clean}
+    config.notification_settings = merged
+
+    session.add(AuditLog(
+        guild_id=guild_id,
+        user_id=int(current_user["sub"]),
+        username=current_user.get("username", f"user_{current_user['sub']}"),
+        action="NOTIFICATION_SETTINGS_CHANGED",
+        detail={
+            "before": before,
+            "after": merged,
+            "note": note,
+            "via": "web",
+        },
+        created_at=utcnow(),
+    ))
+    await session.commit()
+
+    return {"success": True, "notification_settings": merged}
+
+
+# ─── Batch Resolve Discord User Info ──────────────────────────────────────────
+
+@router.post("/resolve-users")
+@limiter.limit("60/minute")
+async def resolve_users(
+    request: Request,
+    body: dict = Body(...),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Batch resolve Discord user info (avatar + username) cho nhiều user_id.
+
+    Body: {"user_ids": ["1119880453671899196", "833685979147534416", ...]}
+    Return: {"results": {"id1": {"username", "global_name", "avatar_url"}, ...}}
+
+    Backend cache 10 phút (xem discord_resolver.py). Frontend dùng để hiển thị
+    avatar thật cho user_id không nằm trong Staff list (VD: từ duty log, ranking).
+    """
+    user_ids_raw = body.get("user_ids") or []
+    if not isinstance(user_ids_raw, list):
+        raise HTTPException(status_code=400, detail="user_ids phải là list of strings.")
+    # Limit tối đa 100 IDs/request để tránh abuse
+    if len(user_ids_raw) > 100:
+        raise HTTPException(status_code=400, detail="Tối đa 100 user_id/request.")
+
+    valid_ids: set[int] = set()
+    for x in user_ids_raw:
+        try:
+            n = int(x)
+            if 10**14 <= n < 10**20:    # Discord snowflake range
+                valid_ids.add(n)
+        except (TypeError, ValueError):
+            continue
+
+    if not valid_ids:
+        return {"results": {}}
+
+    from web.utils.discord_resolver import batch_resolve_user_info
+    info_map = await batch_resolve_user_info(valid_ids)
+
+    return {
+        "results": {str(uid): info for uid, info in info_map.items() if info},
+    }

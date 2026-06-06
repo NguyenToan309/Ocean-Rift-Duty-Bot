@@ -103,6 +103,37 @@ async def require_auth(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+def is_bot_owner(user_payload: dict) -> bool:
+    """Kiểm tra user có nằm trong BOT_OWNER_IDS không (helper non-raising)."""
+    try:
+        return int(user_payload["sub"]) in settings.BOT_OWNER_IDS
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+async def require_bot_owner(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: chỉ cho phép user có discord_id ∈ settings.BOT_OWNER_IDS.
+
+    - Nếu BOT_OWNER_IDS chưa config (set rỗng) → 500 (config error).
+    - Nếu user không trong list → 403.
+    """
+    if not settings.BOT_OWNER_IDS:
+        logger.critical(
+            "BOT_OWNER_IDS chưa được set trong .env nhưng có request vào /api/admin/* "
+            f"từ user_id={user.get('sub')}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Hệ thống chưa cấu hình bot owner. Liên hệ quản trị viên.",
+        )
+    if not is_bot_owner(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Endpoint này chỉ dành cho bot owner.",
+        )
+    return user
+
+
 async def fetch_member_role_ids(guild_id: int, user_id: int) -> list[int] | None:
     """
     Lấy danh sách role ID của user trong guild từ Discord API.
@@ -119,7 +150,9 @@ async def fetch_member_role_ids(guild_id: int, user_id: int) -> list[int] | None
     if cached != "miss":
         return cached  # Có thể là list hoặc None (cached error)
 
-    # Slow path: lock per-key để tránh thundering herd
+    # Slow path: lock per-key để tránh thundering herd.
+    # HTTP call PHẢI nằm TRONG `async with lock:` — nếu thoát lock trước khi fetch,
+    # các request đồng thời cùng key đều thấy cache miss và đều hit Discord API.
     key = f"{guild_id}:{user_id}"
     lock = await _get_role_lock(key)
     async with lock:
@@ -128,51 +161,89 @@ async def fetch_member_role_ids(guild_id: int, user_id: int) -> list[int] | None
         if cached != "miss":
             return cached
 
-    headers = {"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
-    url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=headers)
+        headers = {"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
+        url = f"{DISCORD_API}/guilds/{guild_id}/members/{user_id}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=headers)
 
-        if resp.status_code == 404:
-            # User không phải member guild — cache []
-            _set_cached_roles(guild_id, user_id, [])
-            return []
+            if resp.status_code == 404:
+                # User không phải member guild — cache []
+                _set_cached_roles(guild_id, user_id, [])
+                return []
 
-        if resp.status_code == 401:
-            logger.error("Discord API 401 — bot token sai hoặc bị revoke!")
-            _set_cached_roles(guild_id, user_id, None)
+            if resp.status_code == 401:
+                logger.error("Discord API 401 — bot token sai hoặc bị revoke!")
+                _set_cached_roles(guild_id, user_id, None)
+                return None
+
+            if resp.status_code == 429:
+                logger.warning(f"Discord API rate limit cho {user_id}@{guild_id}")
+                # Không cache rate-limit (retry sẽ thành công)
+                return None
+
+            if resp.status_code != 200:
+                logger.warning(
+                    f"Discord API trả {resp.status_code} cho member {user_id}@{guild_id}: "
+                    f"{resp.text[:200]}"
+                )
+                _set_cached_roles(guild_id, user_id, None)
+                return None
+
+            roles = [int(r) for r in resp.json().get("roles", [])]
+            _set_cached_roles(guild_id, user_id, roles)
+            return roles
+
+        except httpx.TimeoutException:
+            logger.warning(f"Discord API timeout khi fetch roles {user_id}@{guild_id}")
             return None
-
-        if resp.status_code == 429:
-            logger.warning(f"Discord API rate limit cho {user_id}@{guild_id}")
-            # Không cache rate-limit (retry sẽ thành công)
+        except Exception as e:
+            logger.error(f"Lỗi fetch_member_role_ids({guild_id}, {user_id}): {type(e).__name__}: {e}")
             return None
-
-        if resp.status_code != 200:
-            logger.warning(
-                f"Discord API trả {resp.status_code} cho member {user_id}@{guild_id}: "
-                f"{resp.text[:200]}"
-            )
-            _set_cached_roles(guild_id, user_id, None)
-            return None
-
-        roles = [int(r) for r in resp.json().get("roles", [])]
-        _set_cached_roles(guild_id, user_id, roles)
-        return roles
-
-    except httpx.TimeoutException:
-        logger.warning(f"Discord API timeout khi fetch roles {user_id}@{guild_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Lỗi fetch_member_role_ids({guild_id}, {user_id}): {type(e).__name__}: {e}")
-        return None
 
 
 def invalidate_role_cache(guild_id: int, user_id: int) -> None:
     """Xoá cache khi role của user thay đổi (VD: sau /setup role)"""
     key = f"{guild_id}:{user_id}"
     _ROLE_CACHE.pop(key, None)
+
+
+async def has_guild_role(
+    guild_id: int,
+    role_name: str,
+    user_payload: dict,
+    session: AsyncSession,
+) -> bool:
+    """
+    Check user có role `role_name` (hoặc cao hơn) trong guild — KHÔNG raise.
+    Trả True/False. Discord API lỗi → False (an toàn).
+
+    Dùng khi cần optional check (vd: cho phép admin bypass ownership).
+    """
+    user_id = int(user_payload["sub"])
+    config_row = await session.execute(
+        select(GuildConfig).where(GuildConfig.guild_id == guild_id)
+    )
+    config = config_row.scalar_one_or_none()
+    if not config or not config.is_active:
+        return False
+
+    user_role_ids_raw = await fetch_member_role_ids(guild_id, user_id)
+    if user_role_ids_raw is None or not user_role_ids_raw:
+        return False
+
+    user_role_ids = set(user_role_ids_raw)
+    HIERARCHY = ["DUTY_ADMIN", "DUTY_MOD", "DUTY_MEMBER"]
+    try:
+        required_level = HIERARCHY.index(role_name)
+    except ValueError:
+        return False
+
+    for r in HIERARCHY[:required_level + 1]:
+        rid = config.role_map.get(r)
+        if rid and int(rid) in user_role_ids:
+            return True
+    return False
 
 
 async def require_guild_role(

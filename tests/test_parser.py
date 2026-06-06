@@ -280,3 +280,235 @@ class TestValidation:
         errors = self._make(username="A" * 100).validate()
         # Chỉ kiểm tra không có lỗi username (có thể có lỗi duration mismatch)
         assert not any("trống" in e or "quá dài" in e for e in errors)
+
+
+# ─── V2 format (CAPY TOWN LOGS) ─────────────────────────────────────────────
+
+class TestParseV2:
+    """Định dạng mới với emoji + Discord handle + exit reason"""
+
+    V2_FULL = (
+        "CAPY TOWN LOGS\n"
+        "👤 Tên: Ha Bibi (ACheen)\n"
+        "💬 Discord: @Habibi\n"
+        "🕒 Tổng thời gian: 18 Phút\n"
+        "🟢 Bắt đầu: 30/05/2026 22:43:00\n"
+        "🔴 Kết thúc: 30/05/2026 23:01:58\n"
+        "❓ Lý do rời: Server->client connection timed out. Last seen 795 msec ago."
+    )
+
+    V2_HOURS_MINUTES = (
+        "CAPY TOWN LOGS\n"
+        "Tên: Báo Lê (Báo Lê Văm)\n"
+        "Discord: @VT | Báo\n"
+        "Tổng thời gian: 1 Giờ 10 Phút\n"
+        "Bắt đầu: 30/05/2026 21:55:54\n"
+        "Kết thúc: 30/05/2026 23:06:15\n"
+        "Lý do rời: Exiting"
+    )
+
+    V2_NO_REASON = (
+        "CAPY TOWN LOGS\n"
+        "Tên: HẮC Y ĐẠO SƯ (CP847931)\n"
+        "Tên discord: @VP | Hắc Y Đạo Sư\n"
+        "Tổng thời gian: 1 Giờ 28 Phút\n"
+        "Bắt đầu: 30/05/2026 21:50:10\n"
+        "Kết thúc: 30/05/2026 23:18:21"
+    )
+
+    def test_v2_full_format(self):
+        r = parse_duty_text(self.V2_FULL)
+        assert r is not None
+        assert r.format_version == 2
+        assert r.username == "Ha Bibi (ACheen)"
+        assert r.duration_minutes == 18
+        assert r.discord_handle == "@Habibi"
+        assert r.exit_reason and "timed out" in r.exit_reason
+        assert r.started_at == datetime(2026, 5, 30, 22, 43, 0)
+
+    def test_v2_hours_and_minutes(self):
+        """1 Giờ 10 Phút = 70 phút"""
+        r = parse_duty_text(self.V2_HOURS_MINUTES)
+        assert r is not None
+        assert r.duration_minutes == 70
+        assert r.discord_handle == "@VT | Báo"
+        assert r.exit_reason == "Exiting"
+        assert r.format_version == 2
+
+    def test_v2_no_reason_optional(self):
+        """Field 'Lý do rời' không bắt buộc"""
+        r = parse_duty_text(self.V2_NO_REASON)
+        assert r is not None
+        assert r.username == "HẮC Y ĐẠO SƯ (CP847931)"
+        assert r.duration_minutes == 88   # 1*60 + 28
+        assert r.exit_reason is None
+        assert r.discord_handle == "@VP | Hắc Y Đạo Sư"
+
+    def test_v2_validate_duration_match(self):
+        """V2 với duration khớp thời gian thực tế → no errors"""
+        r = parse_duty_text(self.V2_FULL)
+        # 22:43 → 23:01:58 = ~18.9 phút, ghi 18 → chênh < 5 → OK
+        assert r.validate() == []
+
+    def test_normalize_ocr_inserts_newlines(self):
+        """normalize_ocr_text chèn \\n trước mỗi label kế tiếp."""
+        from bot.utils.parser import normalize_ocr_text
+        single = "CAPY TOWN LOGS Tên: Báo Lê Discord: @VT Tổng thời gian: 1 Giờ"
+        norm = normalize_ocr_text(single)
+        # Mỗi label kế tiếp phải có \n trước
+        assert "\nDiscord:" in norm
+        assert "\nTổng thời gian:" in norm
+
+    def test_normalize_idempotent_with_newlines(self):
+        """Text đã có \\n không bị normalize đè thêm \\n."""
+        from bot.utils.parser import normalize_ocr_text
+        clean = "Tên: A\nDiscord: B\nTổng thời gian: 1 Phút"
+        # Số \n trong original
+        assert normalize_ocr_text(clean).count("\n") == clean.count("\n")
+
+    def test_v2_ocr_single_line(self):
+        """OCR EasyOCR với paragraph=True join hết các field vào 1 dòng.
+
+        Regression bug: regex `[^\\n]+` greedy → username nuốt cả block log
+        → vượt 100 ký tự → /log upload reject 'Tên người dùng quá dài'.
+        Fix: non-greedy + lookahead stop ở label kế tiếp.
+        """
+        single = (
+            "CAPY TOWN LOGS "
+            "Tên: Báo Lê (CP890743) "
+            "Discord: @VT | Báo "
+            "Tổng thời gian: 1 Giờ 11 Phút "
+            "Bắt đầu: 02/06/2026 23:59:39 "
+            "Kết thúc: 03/06/2026 01:11:12"
+        )
+        r = parse_duty_text(single)
+        assert r is not None
+        assert r.username == "Báo Lê (CP890743)"
+        assert len(r.username) <= 100
+        assert r.discord_handle == "@VT | Báo"
+        assert r.duration_minutes == 71
+
+    def test_v2_long_exit_reason_doesnt_eat_name(self):
+        """Lý do rời rất dài (cả paragraph từ AntiCheat) — username vẫn ngắn."""
+        text = (
+            "CAPY TOWN LOGS\n"
+            "Tên: Trịnh Quốc Trường (Panda)\n"
+            "Discord: @TTS | Trịnh Quốc Trường\n"
+            "Tổng thời gian: 2 Giờ 13 Phút\n"
+            "Bắt đầu: 02/06/2026 21:31:38\n"
+            "Kết thúc: 02/06/2026 23:45:31\n"
+            "Lý do rời: Bạn đã bị cấm bởi hệ thống AntiCheat. Lệnh cấm này "
+            "không bao giờ hết hạn. Nếu bạn cho rằng lệnh cấm này là sai, "
+            "vui lòng liên hệ ban quản trị máy chủ."
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.username == "Trịnh Quốc Trường (Panda)"
+        assert len(r.username) <= 100
+        assert r.duration_minutes == 133
+
+    def test_v2_ocr_no_diacritics(self):
+        """OCR trên ảnh thường MẤT dấu tiếng Việt — parser V2 phải vẫn nhận
+
+        Đây là use case `/log upload` (EasyOCR đôi khi trả "Ten" thay vì "Tên",
+        "Phut" thay vì "Phút"). Trước fix loose-regex: parser fail → user thấy
+        "Không tìm thấy định dạng LOG DUTY trong ảnh".
+        """
+        ocr_text = (
+            "CAPY TOWN LOGS\n"
+            "Ten: Bao Le (CP890743)\n"
+            "Ten discord: @VT | Bao\n"
+            "Tong thoi gian: 40 Phut\n"
+            "Bat dau: 31/05/2026 00:58:50\n"
+            "Ket thuc: 31/05/2026 01:39:05"
+        )
+        r = parse_duty_text(ocr_text)
+        assert r is not None
+        assert r.username == "Bao Le (CP890743)"
+        assert r.duration_minutes == 40
+        assert r.discord_handle == "@VT | Bao"
+        assert r.format_version == 2
+
+    def test_v2_with_emoji_prefix(self):
+        """Format CAPY TOWN LOGS có emoji trước mỗi field — parser phải bỏ qua emoji"""
+        text = (
+            "CAPY TOWN LOGS\n"
+            "👤 Tên: Báo Lê (Báo Lê Văm)\n"
+            "💬 Discord: @VT | Báo\n"
+            "🕒 Tổng thời gian: 16 Phút\n"
+            "🟢 Bắt đầu: 31/05/2026 16:44:19\n"
+            "🔴 Kết thúc: 31/05/2026 17:01:08\n"
+            "❓ Lý do rời: [txAdmin] Server restarting (admin request)."
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.username == "Báo Lê (Báo Lê Văm)"
+        assert r.duration_minutes == 16
+        assert r.discord_handle == "@VT | Báo"
+        assert r.exit_reason and "txAdmin" in r.exit_reason
+
+    def test_v2_duration_seconds_short_log(self):
+        """Log siêu ngắn (39 giây) → round up = 1 phút, không phải 2340"""
+        text = (
+            "CAPY TOWN LOGS\n"
+            "Tên: Test User\n"
+            "Tổng thời gian: 39 Giây\n"
+            "Bắt đầu: 31/05/2026 12:10:13\n"
+            "Kết thúc: 31/05/2026 12:10:52"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 1   # NOT 39, NOT 2340
+
+    def test_v2_duration_combined_hms(self):
+        """Hỗ trợ '1 Giờ 5 Phút 30 Giây' = 66 phút (làm tròn từ 3930s)"""
+        text = (
+            "Tên: Test\n"
+            "Tổng thời gian: 1 Giờ 5 Phút 30 Giây\n"
+            "Bắt đầu: 31/05/2026 10:00:00\n"
+            "Kết thúc: 31/05/2026 11:05:30"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 66
+
+    def test_v2_duration_only_hours(self):
+        """'1 Giờ' không có phút/giây — phải parse được"""
+        text = (
+            "Tên: Test\n"
+            "Tổng thời gian: 1 Giờ\n"
+            "Bắt đầu: 31/05/2026 10:00:00\n"
+            "Kết thúc: 31/05/2026 11:00:00"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 60
+
+    def test_v2_ocr_wrong_diacritics(self):
+        """OCR đôi khi ĐOÁN SAI dấu — vẫn phải parse được"""
+        wrong = (
+            "CAPY TOWN LOGS\n"
+            "Tèn: Test\n"
+            "Tống thới gian: 1 Gìò 28 Phứt\n"
+            "Bặt dầu: 31/05/2026 21:50:10\n"
+            "Kệt thúc: 31/05/2026 23:18:21"
+        )
+        r = parse_duty_text(wrong)
+        assert r is not None
+        assert r.duration_minutes == 88   # 1*60 + 28
+
+    def test_v1_still_works(self):
+        """V1 (LOG DUTY cũ) vẫn parse được sau khi thêm V2 — backward compat"""
+        text = (
+            "LOG DUTY\n"
+            "Tên: Test User\n"
+            "Thời gian làm việc: 60 phút\n"
+            "Thời gian bắt đầu: 01/05/2026 08:00:00\n"
+            "Thời gian kết thúc: 01/05/2026 09:00:00"
+        )
+        r = parse_duty_text(text)
+        assert r is not None
+        assert r.duration_minutes == 60
+        assert r.format_version == 1
+        assert r.discord_handle is None
+        assert r.exit_reason is None
