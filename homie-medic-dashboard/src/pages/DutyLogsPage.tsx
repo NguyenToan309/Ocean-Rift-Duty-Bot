@@ -51,7 +51,10 @@ export function DutyLogsPage() {
   const [period, setPeriod] = useState<string>(initialPeriod);
   const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
 
-  const logsQ = useLogs(currentGuildId, page, search, period);
+  // Luôn group_by_user=true để 1 Discord user = 1 card duy nhất, kể cả khi
+  // họ có nhiều username trong các log (đổi character ingame). Backend
+  // paginate theo USER thay vì theo LOG.
+  const logsQ = useLogs(currentGuildId, page, search, period, true);
   const { learnAvatar } = useAvatars();
 
   // Binding info: fetch danh sách binding để hiển thị original/current name + history
@@ -398,7 +401,9 @@ export function DutyLogsPage() {
       {groups.length > 0 && (
         <div className="flex items-center justify-between py-3">
           <p className="text-xs text-[var(--muted-foreground)]">
-            {logsQ.data ? `Trang ${page} · ${groups.length} nhân viên · ${logsQ.data.total.toLocaleString('vi-VN')} bản ghi tổng` : '...'}
+            {logsQ.data
+              ? `Trang ${page} · ${groups.length}/${logsQ.data.total.toLocaleString('vi-VN')} nhân viên trong kỳ`
+              : '...'}
           </p>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}>

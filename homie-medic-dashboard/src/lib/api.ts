@@ -629,6 +629,7 @@ export const api = {
     user_id?: string,
     search?: string,
     period?: string,
+    group_by_user?: boolean,
   ): Promise<{ items: DutyLog[]; total: number; page: number; page_size: number }> => {
     const r = await apiFetch<{
       total: number;
@@ -647,7 +648,11 @@ export const api = {
         image_url?: string | null;
       }>;
     }>('/api/dashboard/logs', {
-      query: { guild_id, page, page_size, user_id, search, period: period || 'all' },
+      query: {
+        guild_id, page, page_size, user_id, search,
+        period: period || 'all',
+        group_by_user: group_by_user ? 'true' : undefined,
+      },
     });
     return {
       total: r.total || 0,

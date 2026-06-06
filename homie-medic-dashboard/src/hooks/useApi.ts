@@ -107,13 +107,19 @@ export function useAttendance(guildId: string | null, period: string, start?: st
 }
 
 type LogsResponse = { items: DutyLog[]; total: number; page: number; page_size: number };
-export function useLogs(guildId: string | null, page: number, search?: string, period?: string) {
+export function useLogs(
+  guildId: string | null,
+  page: number,
+  search?: string,
+  period?: string,
+  groupByUser?: boolean,
+) {
   return useAsync<LogsResponse>(
     () =>
       guildId
-        ? (api.logs(guildId, page, 20, undefined, search, period) as Promise<LogsResponse>)
+        ? (api.logs(guildId, page, 20, undefined, search, period, groupByUser) as Promise<LogsResponse>)
         : Promise.resolve({ items: [], total: 0, page, page_size: 20 }),
-    [guildId, page, search, period],
+    [guildId, page, search, period, groupByUser],
   );
 }
 

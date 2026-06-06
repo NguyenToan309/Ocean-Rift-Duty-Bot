@@ -742,6 +742,7 @@ async def list_logs(
     date_to: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    group_by_user: bool = Query(False, description="True: paginate theo USER, trả toàn bộ log của các user trong page"),
     session: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
@@ -750,6 +751,10 @@ async def list_logs(
     - DUTY_MEMBER: CHỈ xem log của chính mình (user_id bị force = sub trong JWT)
     - DUTY_MOD/ADMIN: xem tất cả, có thể filter theo user_id
     Chỉ MOD+ mới xóa được (xem endpoint DELETE).
+
+    Khi `group_by_user=true`: pagination áp dụng cho DISTINCT user_id
+    (không phải số log). Trả về TẤT CẢ log của những user trên trang đó.
+    `total` khi đó là tổng số user (không phải tổng số log).
     """
     await require_guild_role(guild_id, "DUTY_MEMBER", current_user, session)
 
@@ -778,10 +783,13 @@ async def list_logs(
     )
     guild_tz = tz_result.scalar_one_or_none() or "Asia/Ho_Chi_Minh"
 
-    if date_from and date_to:
-        start, end = get_custom_range(date_from, date_to, guild_tz)
-    else:
-        start, end = get_period_range(period, tz_str=guild_tz)
+    try:
+        if date_from and date_to:
+            start, end = get_custom_range(date_from, date_to, guild_tz)
+        else:
+            start, end = get_period_range(period, tz_str=guild_tz)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     base_q = (
         select(DutyLog)
@@ -789,28 +797,79 @@ async def list_logs(
         .where(DutyLog.started_at >= start)
         .where(DutyLog.started_at <= end)
     )
-    count_q = (
-        select(func.count(DutyLog.id))
-        .where(DutyLog.guild_id == guild_id)
-        .where(DutyLog.started_at >= start)
-        .where(DutyLog.started_at <= end)
-    )
     if user_id is not None:
         base_q = base_q.where(DutyLog.user_id == user_id)
-        count_q = count_q.where(DutyLog.user_id == user_id)
-
-    total = (await session.execute(count_q)).scalar() or 0
 
     offset = (page - 1) * page_size
-    rows = await session.execute(
-        base_q.order_by(DutyLog.started_at.desc()).offset(offset).limit(page_size)
-    )
-    logs = list(rows.scalars().all())
+
+    if group_by_user:
+        # Bước 1: tìm các user_id distinct, sort theo log gần nhất
+        user_q = (
+            select(
+                DutyLog.user_id,
+                func.max(DutyLog.started_at).label("last_at"),
+            )
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id.isnot(None))
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+        )
+        if user_id is not None:
+            user_q = user_q.where(DutyLog.user_id == user_id)
+        user_q = user_q.group_by(DutyLog.user_id).order_by(func.max(DutyLog.started_at).desc())
+
+        # Tổng số user (cho pagination)
+        total_users_q = (
+            select(func.count(func.distinct(DutyLog.user_id)))
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.user_id.isnot(None))
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+        )
+        if user_id is not None:
+            total_users_q = total_users_q.where(DutyLog.user_id == user_id)
+        total = (await session.execute(total_users_q)).scalar() or 0
+
+        # Lấy user_ids cho trang hiện tại
+        user_rows = await session.execute(user_q.offset(offset).limit(page_size))
+        page_user_ids = [r.user_id for r in user_rows.all()]
+
+        if not page_user_ids:
+            logs = []
+        else:
+            # Bước 2: lấy TẤT CẢ log của các user trên trang trong khoảng
+            logs_rows = await session.execute(
+                base_q.where(DutyLog.user_id.in_(page_user_ids))
+                .order_by(DutyLog.started_at.desc())
+            )
+            logs = list(logs_rows.scalars().all())
+    else:
+        count_q = (
+            select(func.count(DutyLog.id))
+            .where(DutyLog.guild_id == guild_id)
+            .where(DutyLog.started_at >= start)
+            .where(DutyLog.started_at <= end)
+        )
+        if user_id is not None:
+            count_q = count_q.where(DutyLog.user_id == user_id)
+        total = (await session.execute(count_q)).scalar() or 0
+
+        rows = await session.execute(
+            base_q.order_by(DutyLog.started_at.desc()).offset(offset).limit(page_size)
+        )
+        logs = list(rows.scalars().all())
 
     # Batch resolve avatars cho duty logs
     from web.utils.discord_resolver import batch_resolve_user_info
     _log_uids = {log.user_id for log in logs if log.user_id}
     _log_info = await batch_resolve_user_info(_log_uids) if _log_uids else {}
+
+    # Binding-aware display name: ưu tiên DutyIdentityBinding.current_ingame_name,
+    # fallback log.username (giữ nguyên tên ingame của log đó).
+    from utils.ranking_utils import resolve_display_names
+    _log_name_map = await resolve_display_names(
+        session, guild_id=guild_id, user_ids=list(_log_uids), start=start, end=end,
+    ) if _log_uids else {}
 
     return {
         "total": total,
@@ -820,7 +879,8 @@ async def list_logs(
             {
                 "id": log.id,
                 "user_id": log.user_id,
-                "username": log.username,
+                # username trên log gốc — frontend dùng làm hiển thị "tên trong log gốc"
+                "username": _log_name_map.get(log.user_id) or log.username,
                 "avatar_url": (_log_info.get(log.user_id) or {}).get("avatar_url"),
                 "started_at": log.started_at.isoformat() if log.started_at else None,
                 "ended_at": log.ended_at.isoformat() if log.ended_at else None,
