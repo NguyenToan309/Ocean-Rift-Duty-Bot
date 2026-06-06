@@ -83,12 +83,20 @@ async def resolve_display_names(
     *,
     guild_id: int,
     user_ids: list[int],
-    start: datetime | None = None,
-    end: datetime | None = None,
+    start: datetime | None = None,  # noqa: ARG001 — giữ cho backward-compat caller
+    end: datetime | None = None,    # noqa: ARG001 — giữ cho backward-compat caller
 ) -> dict[int, str]:
     """
-    Ưu tiên DutyIdentityBinding.current_ingame_name, fallback username của
-    log gần nhất trong [start, end]. Trả dict {user_id: display_name}.
+    Resolve tên hiển thị cho danh sách Discord user_id.
+
+    Ưu tiên DutyIdentityBinding.current_ingame_name (tên chính thức admin set
+    qua /log rebind). Fallback: username của log GẦN NHẤT TOÀN THỜI GIAN
+    của user đó trong guild — cho stable identity, đảm bảo cùng 1 Discord ID
+    luôn hiển thị cùng 1 display_name ở mọi trang/period/endpoint.
+
+    Tham số `start`/`end` giữ lại để tương thích chữ ký cũ, không còn dùng
+    để filter fallback — nếu dùng sẽ gây hiện tượng "cùng user, tên khác nhau
+    giữa các tab Tháng/Quý/Tất cả".
     """
     if not user_ids:
         return {}
@@ -110,17 +118,14 @@ async def resolve_display_names(
     latest_map: dict[int, str] = {}
     missing = [u for u in user_ids if u not in binding_map]
     if missing:
-        q = (
+        # Fallback: username của log gần nhất GLOBALLY (không filter period)
+        # — giữ display_name ổn định khi user chuyển tab/page.
+        n_rows = await session.execute(
             select(DutyLog.user_id, DutyLog.username)
             .where(DutyLog.guild_id == guild_id)
             .where(DutyLog.user_id.in_(missing))
+            .order_by(DutyLog.user_id, DutyLog.started_at.desc())
         )
-        if start is not None:
-            q = q.where(DutyLog.started_at >= start)
-        if end is not None:
-            q = q.where(DutyLog.started_at <= end)
-        q = q.order_by(DutyLog.user_id, DutyLog.started_at.desc())
-        n_rows = await session.execute(q)
         for r in n_rows.all():
             if r.user_id not in latest_map:
                 latest_map[r.user_id] = r.username

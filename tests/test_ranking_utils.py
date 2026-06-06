@@ -145,3 +145,34 @@ async def test_resolve_one_display_name_with_binding():
     session = _make_session_returning(_mock_result([bind]))
     out = await resolve_one_display_name(session, guild_id=1, user_id=777)
     assert out == "Hero"
+
+
+@pytest.mark.asyncio
+async def test_resolve_display_names_ignores_period_for_stable_identity():
+    """Regression: cùng Discord ID không có binding phải trả CÙNG display_name
+    khi gọi với period khác nhau — tránh hiện tượng 'Diệp Phong (Gánh Cả Lũ)'
+    ở tab Tháng nhưng 'Diệp Phong (CP159864)' ở tab Tất cả.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
+    # Call 1 (period Tháng): binding empty, latest username trong period = "X"
+    # Call 2 (period Tất cả): binding empty, latest username trong period = "Y"
+    # Vì giờ ta KHÔNG filter theo period nữa, cả 2 call phải hỏi cùng 1 query
+    # và trả cùng tên. Mock cùng 1 row "Stable" cho cả 2 fallback query.
+    session = _make_session_returning(
+        _mock_result([]),  # binding empty (call 1)
+        _mock_result([MagicMock(user_id=42, username="Stable")]),
+        _mock_result([]),  # binding empty (call 2)
+        _mock_result([MagicMock(user_id=42, username="Stable")]),
+    )
+    period1 = (_dt(2026, 6, 1, tzinfo=_tz.utc), _dt(2026, 6, 30, tzinfo=_tz.utc))
+    period2 = (_dt(2024, 1, 1, tzinfo=_tz.utc), _dt(2026, 12, 31, tzinfo=_tz.utc))
+    out1 = await resolve_display_names(
+        session, guild_id=1, user_ids=[42], start=period1[0], end=period1[1],
+    )
+    out2 = await resolve_display_names(
+        session, guild_id=1, user_ids=[42], start=period2[0], end=period2[1],
+    )
+    assert out1 == {42: "Stable"}
+    assert out2 == {42: "Stable"}
+    assert out1[42] == out2[42], "Display name phải ổn định cross-period"
