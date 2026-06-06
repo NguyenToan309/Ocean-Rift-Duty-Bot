@@ -1,22 +1,21 @@
-import { useState, useEffect, useMemo } from 'react';
-import { Download, Trophy, Calendar, X } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Download, Trophy, Calendar } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useRanking } from '../hooks/useApi';
 import { api, formatError } from '../lib/api';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
 import { Avatar } from '../components/ui/avatar';
 import { Skeleton, EmptyState, DiscordIdChip } from '../components/shared/misc';
 import { minutesToHHMM, avatarText } from '../lib/format';
 import { useAvatars } from '../contexts/AvatarContext';
 import { cn } from '../lib/cn';
-import type { Period } from '../components/layout/Topbar';
+import type { PeriodState } from '../components/layout/Topbar';
 
 /**
  * Format DD/MM/YYYY từ ISO date string (YYYY-MM-DD).
- * Backend get_custom_range expect DD/MM/YYYY nên ta convert ở frontend.
+ * Backend get_custom_range expect DD/MM/YYYY.
  */
 function isoToVnDate(iso: string): string {
   if (!iso) return '';
@@ -26,39 +25,18 @@ function isoToVnDate(iso: string): string {
 }
 
 export function RankingsPage() {
-  const { period: topbarPeriod } = useOutletContext<{ period: Period }>();
+  const { period, customRange } = useOutletContext<PeriodState>();
   const { currentGuildId } = useAuth();
   const { getAvatar, learnAvatar } = useAvatars();
   const [mode, setMode] = useState<'top' | 'bottom'>('top');
 
-  // Date range picker — nếu cả 2 đều có giá trị thì dùng date range,
-  // ngược lại dùng period từ topbar.
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
-  const useCustomRange = Boolean(dateFrom && dateTo);
-
-  // Validate range
-  const rangeError = useMemo(() => {
-    if (!useCustomRange) return null;
-    if (new Date(dateFrom) > new Date(dateTo)) {
-      return 'Ngày bắt đầu phải trước ngày kết thúc';
-    }
-    return null;
-  }, [dateFrom, dateTo, useCustomRange]);
-
-  // Period dùng để gửi backend (nếu custom range thì 'all' — backend sẽ override
-  // bằng date_from/date_to khi có cả hai)
-  const period: string = useCustomRange ? 'all' : topbarPeriod;
-  const startParam = useCustomRange && !rangeError ? isoToVnDate(dateFrom) : undefined;
-  const endParam = useCustomRange && !rangeError ? isoToVnDate(dateTo) : undefined;
+  // Khi period === 'custom' và có customRange → gửi date_from/date_to DD/MM/YYYY.
+  const useCustomRange = period === 'custom' && !!customRange;
+  const startParam = useCustomRange && customRange ? isoToVnDate(customRange.from) : undefined;
+  const endParam = useCustomRange && customRange ? isoToVnDate(customRange.to) : undefined;
 
   const rankQ = useRanking(currentGuildId, period, mode, 20, startParam, endParam);
   const data = rankQ.data || [];
-
-  const clearRange = () => {
-    setDateFrom('');
-    setDateTo('');
-  };
 
   // Seed avatar cache
   useEffect(() => {
@@ -69,10 +47,6 @@ export function RankingsPage() {
 
   const onExport = async () => {
     if (!currentGuildId) return;
-    if (rangeError) {
-      alert(rangeError);
-      return;
-    }
     try {
       const r = await api.exportPrepare(currentGuildId, 'excel', period, {
         mode: 'ranking',
@@ -120,51 +94,22 @@ export function RankingsPage() {
         </Button>
       </div>
 
-      {/* Date range picker — chọn khoảng cụ thể DD/MM/YYYY */}
-      <Card className="p-4">
-        <div className="flex items-end gap-3 flex-wrap">
-          <Calendar className="h-5 w-5 text-[var(--muted-foreground)] mb-2.5" />
-          <div className="flex-1 min-w-[180px]">
-            <label className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] block mb-1">
-              Từ ngày
-            </label>
-            <Input
-              type="date"
-              value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-              max={dateTo || undefined}
-            />
-          </div>
-          <div className="flex-1 min-w-[180px]">
-            <label className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] block mb-1">
-              Đến ngày
-            </label>
-            <Input
-              type="date"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
-              min={dateFrom || undefined}
-            />
-          </div>
-          {useCustomRange && (
-            <Button variant="outline" onClick={clearRange} size="sm" className="mb-0.5">
-              <X className="h-3.5 w-3.5" /> Xoá lọc
-            </Button>
-          )}
-          {!useCustomRange && (
-            <span className="text-xs text-[var(--muted-foreground)] mb-3">
-              Đang dùng kỳ ở thanh trên: <strong>{topbarPeriod}</strong>
+      {/* Thông báo kỳ đang xem — đổi qua chip ở thanh Topbar */}
+      <Card className="p-3">
+        <div className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+          <Calendar className="h-4 w-4" />
+          {useCustomRange && customRange ? (
+            <span>
+              Đang xem: <strong className="text-[var(--foreground)]">{isoToVnDate(customRange.from)} → {isoToVnDate(customRange.to)}</strong>
+              {' '}— đổi khoảng ngày qua chip <em>Tùy chỉnh</em> ở thanh trên.
+            </span>
+          ) : (
+            <span>
+              Đang dùng kỳ: <strong className="text-[var(--foreground)]">{period}</strong>
+              {' '}— chọn <em>Tùy chỉnh</em> ở thanh trên để lọc khoảng ngày riêng.
             </span>
           )}
         </div>
-        {rangeError && (
-          <div className="mt-2 text-xs text-[var(--destructive)]">⚠️ {rangeError}</div>
-        )}
-        {useCustomRange && !rangeError && (
-          <div className="mt-2 text-xs text-[var(--muted-foreground)]">
-            Hiển thị log từ <strong>{isoToVnDate(dateFrom)}</strong> đến <strong>{isoToVnDate(dateTo)}</strong>
-          </div>
-        )}
       </Card>
 
       {/* Podium for Top */}

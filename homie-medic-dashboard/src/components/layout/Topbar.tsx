@@ -1,36 +1,83 @@
-import { useState, useEffect, useRef } from 'react';
-import { Bell, Sun, Moon, ChevronDown, Menu, LogOut, User as UserIcon, Settings } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { Bell, Sun, Moon, ChevronDown, Menu, LogOut, User as UserIcon, Settings, Calendar } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../../lib/cn';
 import { Avatar } from '../ui/avatar';
 
-export type Period = 'day' | 'week' | 'month' | 'quarter';
+export type Period = 'day' | 'week' | 'month' | 'quarter' | 'custom';
+
+export interface CustomRange {
+  from: string;  // ISO YYYY-MM-DD
+  to: string;    // ISO YYYY-MM-DD
+}
+
+export interface PeriodState {
+  period: Period;
+  customRange: CustomRange | null;
+}
 
 interface TopbarProps {
   onToggleSidebar: () => void;
   period: Period;
   onPeriodChange: (p: Period) => void;
+  customRange: CustomRange | null;
+  onCustomRangeChange: (r: CustomRange | null) => void;
   pendingCount?: number;
   onOpenNotifications: () => void;
 }
 
-const PERIODS: { key: Period; label: string }[] = [
+const PERIODS: { key: Exclude<Period, 'custom'>; label: string }[] = [
   { key: 'day', label: 'Hôm nay' },
   { key: 'week', label: 'Tuần' },
   { key: 'month', label: 'Tháng' },
   { key: 'quarter', label: 'Quý' },
 ];
 
-export function Topbar({ onToggleSidebar, period, onPeriodChange, pendingCount = 0, onOpenNotifications }: TopbarProps) {
+function formatVnDate(iso: string): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  if (!y || !m || !d) return '';
+  return `${d}/${m}`;
+}
+
+export function Topbar({
+  onToggleSidebar,
+  period,
+  onPeriodChange,
+  customRange,
+  onCustomRangeChange,
+  pendingCount = 0,
+  onOpenNotifications,
+}: TopbarProps) {
   const { theme, toggleTheme } = useTheme();
   const { me, guilds, currentGuildId, setCurrentGuildId, currentGuild, logout } = useAuth();
   const navigate = useNavigate();
   const [guildMenuOpen, setGuildMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
   const guildMenuRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const customRef = useRef<HTMLDivElement>(null);
+
+  // Popover form state — chỉ commit khi user click "Áp dụng"
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const yesterday = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }, []);
+  const [draftFrom, setDraftFrom] = useState<string>(customRange?.from || yesterday);
+  const [draftTo, setDraftTo] = useState<string>(customRange?.to || today);
+
+  // Sync draft khi customRange thay đổi từ ngoài (localStorage restore)
+  useEffect(() => {
+    if (customRange) {
+      setDraftFrom(customRange.from);
+      setDraftTo(customRange.to);
+    }
+  }, [customRange]);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -40,10 +87,37 @@ export function Topbar({ onToggleSidebar, period, onPeriodChange, pendingCount =
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
         setUserMenuOpen(false);
       }
+      if (customRef.current && !customRef.current.contains(e.target as Node)) {
+        setCustomOpen(false);
+      }
     };
     document.addEventListener('mousedown', onClick);
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
+
+  const draftError = useMemo(() => {
+    if (!draftFrom || !draftTo) return 'Cần nhập cả 2 ngày';
+    if (draftFrom > draftTo) return 'Từ ngày phải ≤ đến ngày';
+    if (draftTo > today) return 'Đến ngày không được vượt hôm nay';
+    return null;
+  }, [draftFrom, draftTo, today]);
+
+  const applyCustom = () => {
+    if (draftError) return;
+    onCustomRangeChange({ from: draftFrom, to: draftTo });
+    onPeriodChange('custom');
+    setCustomOpen(false);
+  };
+
+  const cancelCustom = () => {
+    setDraftFrom(customRange?.from || yesterday);
+    setDraftTo(customRange?.to || today);
+    setCustomOpen(false);
+  };
+
+  const customChipLabel = period === 'custom' && customRange
+    ? `${formatVnDate(customRange.from)} → ${formatVnDate(customRange.to)}`
+    : 'Tùy chỉnh';
 
   return (
     <header className="sticky top-0 z-20 h-16 bg-[var(--card)] border-b border-[var(--border)] flex items-center px-6 gap-4">
@@ -105,7 +179,10 @@ export function Topbar({ onToggleSidebar, period, onPeriodChange, pendingCount =
         {PERIODS.map((p) => (
           <button
             key={p.key}
-            onClick={() => onPeriodChange(p.key)}
+            onClick={() => {
+              onPeriodChange(p.key);
+              onCustomRangeChange(null);
+            }}
             className={cn(
               'px-3 py-1 rounded-md text-xs font-medium transition-all',
               period === p.key
@@ -116,6 +193,78 @@ export function Topbar({ onToggleSidebar, period, onPeriodChange, pendingCount =
             {p.label}
           </button>
         ))}
+
+        {/* Custom date chip */}
+        <div ref={customRef} className="relative">
+          <button
+            onClick={() => setCustomOpen(o => !o)}
+            className={cn(
+              'px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-1',
+              period === 'custom'
+                ? 'bg-[var(--card)] text-[var(--foreground)] shadow-sm'
+                : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
+            )}
+            title={period === 'custom' && customRange
+              ? `Từ ${customRange.from} đến ${customRange.to}`
+              : 'Chọn khoảng ngày tùy ý'}
+          >
+            <Calendar className="h-3.5 w-3.5" />
+            {customChipLabel}
+          </button>
+          {customOpen && (
+            <div className="absolute top-full right-0 mt-1 w-[280px] bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-lg p-3 z-50">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted-foreground)] mb-2">
+                Khoảng ngày tùy chỉnh
+              </p>
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-[var(--muted-foreground)] block mb-1">Từ ngày</label>
+                  <input
+                    type="date"
+                    value={draftFrom}
+                    onChange={(e) => setDraftFrom(e.target.value)}
+                    max={draftTo || today}
+                    className="w-full px-2 py-1.5 text-xs rounded border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)]"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-[var(--muted-foreground)] block mb-1">Đến ngày</label>
+                  <input
+                    type="date"
+                    value={draftTo}
+                    onChange={(e) => setDraftTo(e.target.value)}
+                    min={draftFrom || undefined}
+                    max={today}
+                    className="w-full px-2 py-1.5 text-xs rounded border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)]"
+                  />
+                </div>
+              </div>
+              {draftError && (
+                <p className="text-[10px] text-[var(--destructive)] mt-2">⚠️ {draftError}</p>
+              )}
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={cancelCustom}
+                  className="flex-1 px-3 py-1.5 text-xs rounded border border-[var(--border)] hover:bg-[var(--muted)]"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={applyCustom}
+                  disabled={!!draftError}
+                  className={cn(
+                    'flex-1 px-3 py-1.5 text-xs rounded font-medium',
+                    draftError
+                      ? 'bg-[var(--muted)] text-[var(--muted-foreground)] cursor-not-allowed'
+                      : 'bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90',
+                  )}
+                >
+                  Áp dụng
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1" />

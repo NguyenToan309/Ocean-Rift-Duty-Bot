@@ -78,10 +78,10 @@ export function useOverview(guildId: string | null, period: string, start?: stri
   );
 }
 
-export function useChart(guildId: string | null, period: string) {
+export function useChart(guildId: string | null, period: string, start?: string, end?: string) {
   return useAsync<ChartPoint[]>(
-    () => (guildId ? api.chart(guildId, period) : Promise.resolve([])),
-    [guildId, period],
+    () => (guildId ? api.chart(guildId, period, start, end) : Promise.resolve([])),
+    [guildId, period, start, end],
   );
 }
 
@@ -99,10 +99,10 @@ export function useRanking(
   );
 }
 
-export function useAttendance(guildId: string | null, period: string) {
+export function useAttendance(guildId: string | null, period: string, start?: string, end?: string) {
   return useAsync<AttendanceUser[]>(
-    () => (guildId ? api.attendance(guildId, period) : Promise.resolve([])),
-    [guildId, period],
+    () => (guildId ? api.attendance(guildId, period, start, end) : Promise.resolve([])),
+    [guildId, period, start, end],
   );
 }
 

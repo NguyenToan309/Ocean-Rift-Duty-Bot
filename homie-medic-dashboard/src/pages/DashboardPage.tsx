@@ -14,18 +14,30 @@ import { Avatar } from '../components/ui/avatar';
 import { Skeleton, EmptyState, DiscordIdChip } from '../components/shared/misc';
 import { greetingByHour, minutesToHHMM, avatarText } from '../lib/format';
 import { useAvatars } from '../contexts/AvatarContext';
-import type { Period } from '../components/layout/Topbar';
+import type { PeriodState } from '../components/layout/Topbar';
 import { cn } from '../lib/cn';
 
+/** YYYY-MM-DD → DD/MM/YYYY (backend get_custom_range format). */
+function isoToVnDate(iso: string): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  if (!y || !m || !d) return '';
+  return `${d}/${m}/${y}`;
+}
+
 export function DashboardPage() {
-  const { period } = useOutletContext<{ period: Period }>();
+  const { period, customRange } = useOutletContext<PeriodState>();
   const { me, currentGuildId, currentGuild } = useAuth();
   const { getAvatar, learnAvatar } = useAvatars();
 
-  const overviewQ = useOverview(currentGuildId, period);
-  const chartQ = useChart(currentGuildId, period);
-  const topQ = useRanking(currentGuildId, period, 'top', 5);
-  const attQ = useAttendance(currentGuildId, period);
+  const useCustom = period === 'custom' && !!customRange;
+  const startParam = useCustom && customRange ? isoToVnDate(customRange.from) : undefined;
+  const endParam = useCustom && customRange ? isoToVnDate(customRange.to) : undefined;
+
+  const overviewQ = useOverview(currentGuildId, period, startParam, endParam);
+  const chartQ = useChart(currentGuildId, period, startParam, endParam);
+  const topQ = useRanking(currentGuildId, period, 'top', 5, startParam, endParam);
+  const attQ = useAttendance(currentGuildId, period, startParam, endParam);
   const pendingQ = useLeavePending(currentGuildId);
 
   const onDuty = (attQ.data || []).filter((u: any) => u?.total_minutes > 0).slice(0, 5);

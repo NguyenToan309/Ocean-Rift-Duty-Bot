@@ -685,6 +685,8 @@ async def get_chart_data(
     request: Request,
     guild_id: int = Query(...),
     period: str = Query("week"),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
     session: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_auth),
 ):
@@ -698,7 +700,13 @@ async def get_chart_data(
         select(GuildConfig.timezone).where(GuildConfig.guild_id == guild_id)
     )
     guild_tz = tz_result.scalar_one_or_none() or "Asia/Ho_Chi_Minh"
-    start, end = get_period_range(period, tz_str=guild_tz)
+    try:
+        if date_from and date_to:
+            start, end = get_custom_range(date_from, date_to, guild_tz)
+        else:
+            start, end = get_period_range(period, tz_str=guild_tz)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Group by ngày (cast về date)
     from sqlalchemy import cast, Date

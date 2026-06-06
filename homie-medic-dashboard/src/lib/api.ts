@@ -464,9 +464,9 @@ export const api = {
     };
   },
 
-  chart: async (guild_id: string, period: string): Promise<ChartPoint[]> => {
+  chart: async (guild_id: string, period: string, start?: string, end?: string): Promise<ChartPoint[]> => {
     const r = await apiFetch<{ labels: string[]; data: number[] }>('/api/dashboard/chart', {
-      query: { guild_id, period },
+      query: { guild_id, period, date_from: start, date_to: end },
     });
     const labels = r.labels || [];
     const data = r.data || [];

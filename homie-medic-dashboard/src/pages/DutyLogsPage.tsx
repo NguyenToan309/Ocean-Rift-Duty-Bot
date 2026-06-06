@@ -17,7 +17,7 @@ import { Avatar } from '../components/ui/avatar';
 import { Skeleton, EmptyState } from '../components/shared/misc';
 import { formatDateTime, minutesToHHMM, avatarText } from '../lib/format';
 import { cn } from '../lib/cn';
-import type { Period } from '../components/layout/Topbar';
+import type { PeriodState } from '../components/layout/Topbar';
 
 const PERIOD_LABELS: Record<string, string> = {
   day: 'Hôm nay',
@@ -38,15 +38,17 @@ interface UserGroup {
 }
 
 export function DutyLogsPage() {
-  const { period: topbarPeriod } = useOutletContext<{ period: Period }>();
+  const { period: topbarPeriod } = useOutletContext<PeriodState>();
   const { currentGuildId, currentGuild } = useAuth();
   const isAdmin = currentGuild?.is_admin || false;
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
-  // Period local — mặc định theo topbar nhưng có thể override
-  const [period, setPeriod] = useState<string>(topbarPeriod || 'all');
+  // Period local — mặc định theo topbar (nhưng nếu topbar = 'custom' thì fallback 'all'
+  // vì DutyLogsPage không hỗ trợ custom date range ở UI nội bộ).
+  const initialPeriod = topbarPeriod === 'custom' ? 'all' : (topbarPeriod || 'all');
+  const [period, setPeriod] = useState<string>(initialPeriod);
   const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
 
   const logsQ = useLogs(currentGuildId, page, search, period);
