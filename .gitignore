@@ -3,6 +3,13 @@
 *.env
 .env.local
 .env.production
+.env.bak
+*.bak
+*.backup
+secrets.*
+credentials.*
+*.pem
+*.key
 
 # === Python ===
 __pycache__/
