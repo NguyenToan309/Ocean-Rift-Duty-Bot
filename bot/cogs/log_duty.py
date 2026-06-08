@@ -609,9 +609,10 @@ class LogDutyCog(commands.Cog):
         if not message.guild:
             return
 
-        # Lấy config guild — phải đã setup
-        async with AsyncSessionLocal() as session:
-            config = await _get_guild_config(session, message.guild.id)
+        # HOT PATH: dùng TTL cache 60s thay vì query DB mỗi tin nhắn.
+        # Cache được invalidate khi /setup hoặc web admin update config.
+        from bot.utils.guild_config_cache import get_guild_config as _get_cfg_cached
+        config = await _get_cfg_cached(message.guild.id)
 
         if not config or not config.is_active:
             return

@@ -3,6 +3,7 @@ web/main.py — FastAPI app entrypoint
 Chạy song song với bot bằng: uvicorn web.main:app --host 0.0.0.0 --port 8000
 """
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 
@@ -19,10 +20,32 @@ from bot.config import settings
 from web.middleware.rate_limit import limiter
 from web.routers import auth, dashboard, export, audit, schedule, leave, realtime, staff, admin, setup as setup_router
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# ─── Logging setup ───────────────────────────────────────────────────────────
+_log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_log_level = logging.DEBUG if settings.DEBUG else logging.INFO
+
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
+try:
+    os.makedirs("logs", exist_ok=True)
+    file_handler = RotatingFileHandler(
+        "logs/web.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(logging.Formatter(_log_format))
+    _handlers.append(file_handler)
+except OSError:
+    pass
+
+logging.basicConfig(level=_log_level, format=_log_format, handlers=_handlers)
+# SQLAlchemy noise — tách khỏi DEBUG bằng DB_DEBUG
+if not settings.DB_DEBUG:
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+# uvicorn access log noisy với health checks
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(

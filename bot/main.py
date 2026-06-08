@@ -4,6 +4,7 @@ Khởi động: python -m bot.main
 """
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 import platform
@@ -17,11 +18,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot.config import settings
 from models.base import create_all_tables
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# ─── Logging setup ───────────────────────────────────────────────────────────
+# Local long-run: INFO mặc định (DEBUG quá verbose). File rotate 10MB × 5
+# để logs/ không phình vô tận. discord.http giảm xuống WARNING vì rate-limit
+# debug rất noisy.
+_log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_log_level = logging.DEBUG if settings.DEBUG else logging.INFO
+
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
+try:
+    os.makedirs("logs", exist_ok=True)
+    file_handler = RotatingFileHandler(
+        "logs/bot.log",
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,              # giữ tối đa 5 file backup (~50 MB)
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(logging.Formatter(_log_format))
+    _handlers.append(file_handler)
+except OSError:
+    # Không tạo được logs/ (vd permission) → chỉ log ra stderr
+    pass
+
+logging.basicConfig(level=_log_level, format=_log_format, handlers=_handlers)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+# SQLAlchemy noise — chỉ hiện nếu DB_DEBUG=True (settings.DB_DEBUG)
+if not settings.DB_DEBUG:
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -149,14 +174,15 @@ class DutyBot(commands.Bot):
         )
 
     async def _presence_poll_loop(self) -> None:
-        """Poll system_settings mỗi 60s, áp dụng khi bot_activity_text đổi.
+        """Poll system_settings mỗi 5 phút, áp dụng khi bot_activity_text đổi.
 
         Loop chạy vĩnh viễn đến khi bot disconnect. Try/except mỗi iteration
-        để 1 lỗi mạng không kill loop.
+        để 1 lỗi mạng không kill loop. Interval 300s (thay vì 60s) — text
+        này hiếm khi đổi, không cần poll high-freq.
         """
         import asyncio
         while not self.is_closed():
-            await asyncio.sleep(60)
+            await asyncio.sleep(300)
             try:
                 await self._refresh_presence_from_db()
             except Exception as e:
@@ -197,7 +223,23 @@ class DutyBot(commands.Bot):
             pass  # Bỏ qua nếu không thể gửi message lỗi
 
 
+def _tune_gc_for_long_run() -> None:
+    """Tune Python GC cho long-running bot.
+
+    Default Python GC threshold (700, 10, 10) trigger collect rất thường xuyên
+    với app có nhiều object ngắn hạn (mọi message → parse → dict → discard).
+    Bot async + nhiều task → GC pause gây lag spike. Tăng threshold giảm tần
+    suất collect, đánh đổi RAM cao hơn chút (~10-20MB).
+
+    Tham khảo: Instagram, Bloomberg dùng threshold lớn hơn cho long-running
+    Python services.
+    """
+    import gc
+    gc.set_threshold(50000, 50, 50)
+
+
 async def main():
+    _tune_gc_for_long_run()
     bot = DutyBot()
     async with bot:
         await bot.start(settings.DISCORD_BOT_TOKEN)

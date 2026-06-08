@@ -190,6 +190,10 @@ class Settings:
     WEB_PORT: int = int(os.getenv("PORT") or os.getenv("WEB_PORT", "8000"))
     ALLOWED_ORIGINS: list[str] = os.getenv("ALLOWED_ORIGINS", "http://localhost:8000").split(",")
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
+    # DB_DEBUG riêng để không ép buộc SQL echo khi DEBUG=True.
+    # Mặc định False — local long-run sẽ không phình log file vì echo mỗi query.
+    # Bật riêng khi cần debug query: DB_DEBUG=true
+    DB_DEBUG: bool = os.getenv("DB_DEBUG", "False").lower() == "true"
 
     # ----- Export -----
     EXPORT_DIR: str = os.getenv("EXPORT_DIR", "/tmp/duty-exports")

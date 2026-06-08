@@ -17,13 +17,18 @@ class Base(DeclarativeBase):
     pass
 
 
-# Engine async — dùng cho toàn bộ ứng dụng
+# Engine async — dùng cho toàn bộ ứng dụng.
+# Pool tune cho local long-run: 5+10 đủ cho 1 bot + 1 web process,
+# tránh giữ idle connection lãng phí RAM.
+# pool_recycle=1800: refresh connection mỗi 30 phút để DB không cắt
+# connection idle (PostgreSQL default idle_in_transaction_session_timeout).
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,       # Log SQL khi DEBUG=True
-    pool_size=10,
-    max_overflow=20,
+    echo=settings.DB_DEBUG,    # Tách khỏi DEBUG để không spam log mọi query
+    pool_size=5,
+    max_overflow=10,
     pool_pre_ping=True,        # Kiểm tra connection trước khi dùng
+    pool_recycle=1800,         # Reset connection mỗi 30 phút
 )
 
 # Session factory

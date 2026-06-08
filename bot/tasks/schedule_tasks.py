@@ -501,10 +501,12 @@ async def on_member_role_update(before: discord.Member, after: discord.Member, b
 
 # ─── Loop 4: xử lý đơn xin nghỉ duyệt qua web ────────────────────────────────
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=90)
 async def process_web_decisions_loop(bot: "commands.Bot"):
     """
-    Chạy mỗi 30s. Quét LeaveRequest đã được duyệt qua WEB nhưng bot chưa xử lý:
+    Chạy mỗi 90s. Quét LeaveRequest đã được duyệt qua WEB nhưng bot chưa xử lý:
+    (90s là trade-off giữa responsiveness và DB load — đơn được duyệt thì
+    member chờ ≤1.5 phút để nhận DM là chấp nhận được.)
       - status != PENDING (đã có quyết định)
       - decided_at IS NOT NULL
       - processed_at IS NULL (bot chưa xử lý)
@@ -676,10 +678,10 @@ async def _before_onboarding():
 
 # ─── Loop 5: backfill quét lịch sử kênh chấm công ────────────────────────────
 
-@tasks.loop(minutes=30)
+@tasks.loop(minutes=60)
 async def backfill_duty_scan_loop(bot: "commands.Bot"):
     """
-    Chạy mỗi 30 phút. Quét lịch sử kênh chấm công để bắt LOG DUTY bị bỏ sót khi:
+    Chạy mỗi 60 phút. Quét lịch sử kênh chấm công để bắt LOG DUTY bị bỏ sót khi:
       - Bot offline / restart đúng lúc user gửi LOG DUTY
       - Parse fail silent
       - User edit/forward message sau khi gửi gốc
